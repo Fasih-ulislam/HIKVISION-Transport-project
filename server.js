@@ -337,45 +337,96 @@ app.delete("/students/:employeeNo", async (req, res) => {
   return res.json({ success: true, message: `Student ${employeeNo} removed` });
 });
 
-// ─── 3. Get All Students ──────────────────────────────────
 app.get("/students", async (req, res) => {
+  const searchID = "1";
+
+  const position = Number(req.query.position || 0);
+
+  const limit = Number(req.query.limit || 30);
+
   const result = await hikRequest(
     "POST",
     "/ISAPI/AccessControl/UserInfo/Search",
     {
       UserInfoSearchCond: {
-        searchID: "1",
-        searchResultPosition: 0,
-        maxResults: 30,
+        searchID,
+        searchResultPosition: position,
+        maxResults: limit,
       },
     },
   );
 
   if (!result.success) {
-    return res
-      .status(500)
-      .json({ error: "Failed to fetch users", detail: result.error });
+    return res.status(500).json({
+      error: "Failed to fetch users",
+      detail: result.error,
+    });
   }
 
-  return res.json({ success: true, data: result.data });
+  return res.json({
+    success: true,
+    searchID,
+    position,
+    limit,
+    data: result.data,
+  });
 });
+
+// ─── 3. Get All Students ──────────────────────────────────
+
+// app.get("/students", async (req, res) => {
+//   const result = await hikRequest(
+//     "POST",
+//     "/ISAPI/AccessControl/UserInfo/Search",
+//     {
+//       UserInfoSearchCond: {
+//         searchID: "1",
+//         searchResultPosition: 0,
+//         maxResults: 30,
+//       },
+//     },
+//   );
+
+//   if (!result.success) {
+//     return res
+//       .status(500)
+//       .json({ error: "Failed to fetch users", detail: result.error });
+//   }
+
+//   return res.json({ success: true, data: result.data });
+// });
 
 // ─── 4. Get Access Logs ───────────────────────────────────
 app.get("/logs", async (req, res) => {
-  const start = req.query.start || "2024-01-01";
-  const end = req.query.end || "2024-12-31";
+  const start = req.query.start || "2026-05-1";
+  const end = req.query.end || "2026-12-31";
 
-  const result = await hikRequest("POST", "/ISAPI/AccessControl/AcsEvent", {
-    AcsEventCond: {
-      searchID: "1",
-      searchResultPosition: 0,
-      maxResults: 30,
-      major: 0,
-      minor: 0,
-      startTime: `${start}T00:00:00`,
-      endTime: `${end}T23:59:59`,
+  const result = await hikRequest(
+    "POST",
+    "/ISAPI/AccessControl/AcsEvent",
+
+    // {
+    //   AcsEventCond: {
+    //     searchID: "1",
+    //     searchResultPosition: 0,
+    //     maxResults: 30,
+    //     major: 5,
+    //     minor: 75,
+    //   },
+    // },
+
+    {
+      AcsEventCond: {
+        searchID: "session_99",
+        searchResultPosition: 0,
+        maxResults: 10,
+        major: 5,
+        minor: 0,
+        timeReverseOrder: true,
+        doorNo: 1,
+      },
     },
-  });
+  );
 
   if (!result.success) {
     return res
