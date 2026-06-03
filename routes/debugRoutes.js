@@ -13,4 +13,8 @@ router.get("/faces/:employeeNo", debugController.faces);
 
 router.get("/fdsetup", debugController.fdsetup);
 
+router.get("/user-capabilities", debugController.userCapabilities);
+
+router.get("/security-users", debugController.securityUsers);
+
 module.exports = router;

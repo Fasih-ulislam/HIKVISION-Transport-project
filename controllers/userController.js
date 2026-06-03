@@ -10,19 +10,33 @@ module.exports.register = async (req, res) => {
     "POST",
     "/ISAPI/AccessControl/UserInfo/Record",
     {
-      UserInfo: {
-        employeeNo,
-        name,
-        userType: "normal",
-        doorRight: "1",
-        Valid: {
-          enable: true,
-          beginTime: "2024-01-01T00:00:00",
-          endTime: "2030-12-31T23:59:59",
+      UserInfo: [
+        {
+          employeeNo: "1001",
+          name: "John",
+          userType: "normal",
         },
-      },
+        {
+          employeeNo: "1002",
+          name: "Alice",
+          userType: "normal",
+        },
+      ],
+
+      //   UserInfo: //{
+      //     employeeNo,
+      //     name,
+      //     userType: "normal",
+      //     doorRight: "1",
+      //     Valid: {
+      //       enable: true,
+      //       beginTime: "2024-01-01T00:00:00",
+      //       endTime: "2030-12-31T23:59:59",
+      //     },
+      //   },
     },
   );
+  return res.status(200).json(addUser);
 
   if (!addUser.success) {
     fs.unlink(req.file.path, () => {});

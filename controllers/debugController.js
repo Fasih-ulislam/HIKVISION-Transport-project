@@ -26,6 +26,22 @@ module.exports.capabilities = async (req, res) => {
 
   return res.json(results);
 };
+module.exports.userCapabilities = async (req, res) => {
+  const endpoints = [
+    "/ISAPI/AccessControl/UserInfo/SetUp",
+    "/ISAPI/AccessControl/UserInfo/Record/capabilities",
+    "/ISAPI/AccessControl/UserInfo/Import",
+    "/ISAPI/AccessControl/UserInfo/Import/capabilities",
+  ];
+
+  const results = {};
+  for (const ep of endpoints) {
+    const r = await hikRequest("GET", ep);
+    results[ep] = r;
+  }
+
+  return res.json(results);
+};
 
 module.exports.faces = async (req, res) => {
   const result = await hikRequest("POST", "/ISAPI/Intelligent/FDLib/FDSearch", {
@@ -39,7 +55,28 @@ module.exports.faces = async (req, res) => {
 };
 
 module.exports.fdsetup = async (req, res) => {
-  const result = await hikRequest("GET", "/ISAPI/Intelligent/FDLib/FDSetUp");
+  const result = await hikRequest("PUT", "/ISAPI/Intelligent/FDLib/FDSetUp", {
+    faceLibType: "blackFD",
+    FDID: "1",
+    FPID: "1",
+    faceURL: "http://172.17.30.228:3000/uploads/test.jpeg",
+  });
 
   res.json(result);
+};
+
+module.exports.securityUsers = async (req, res) => {
+  const endpoints = [
+    "/ISAPI/Security/users",
+    "/ISAPI/Security/capabilities",
+    "/ISAPI/Security/UserInfo",
+  ];
+
+  const results = {};
+
+  for (const ep of endpoints) {
+    results[ep] = await hikRequest("GET", ep);
+  }
+
+  res.json(results);
 };

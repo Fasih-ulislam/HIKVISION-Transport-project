@@ -7,7 +7,7 @@ const loggingRoutes = require("./routes/loggingRoutes");
 const app = express();
 
 // ***enable only when going to backup image upload path***
-//app.use("/uploads", express.static("uploads"));
+app.use("/uploads", express.static("uploads"));
 
 app.use(express.json({ limit: "10mb" }));
 
