@@ -1,6 +1,7 @@
 require("dotenv").config();
 const axios = require("axios");
 const fs = require("fs");
+const crypto = require("crypto");
 
 const DEVICE = `http://${process.env.DEVICE_IP}`;
 const USERNAME = process.env.DEVICE_USER;
