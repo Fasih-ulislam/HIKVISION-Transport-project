@@ -183,8 +183,18 @@ async function uploadFaceDirect(employeeNo, imagePath) {
       data: response.data,
     };
   } catch (err) {
+    const result = await hikRequest(
+      "PUT",
+      "/ISAPI/AccessControl/UserInfo/Delete",
+      {
+        UserInfoDelCond: {
+          EmployeeNoList: [{ employeeNo }],
+        },
+      },
+    );
     return {
       success: false,
+      studentRemoved: result.success,
       status: err.response?.status,
       error: err.response?.data || err.message,
     };

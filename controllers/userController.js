@@ -4,50 +4,50 @@ require("dotenv").config();
 const { hikRequest, uploadFaceDirect } = require("../utils/helperFuntions");
 
 module.exports.register = async (req, res) => {
-  const { employeeNo, name } = req.body;
+  const { employeeNo, name, userType } = req.body;
+  const file = req.file;
+
+  //return res.json("Debugging: Remove later");
+
+  const allowedUserTypes = ["normal", "visitor", "blackList"];
+
+  if (userType) {
+    if (!allowedUserTypes.includes(userType)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid user type", allowedUserTypes });
+    }
+  }
   // create user first
   const addUser = await hikRequest(
     "POST",
     "/ISAPI/AccessControl/UserInfo/Record",
     {
-      UserInfo: [
-        {
-          employeeNo: "1001",
-          name: "John",
-          userType: "normal",
+      UserInfo: {
+        employeeNo,
+        name,
+        userType: userType || "normal",
+        doorRight: "1",
+        Valid: {
+          enable: true,
+          beginTime: "2024-01-01T00:00:00",
+          endTime: "2030-12-31T23:59:59",
         },
-        {
-          employeeNo: "1002",
-          name: "Alice",
-          userType: "normal",
-        },
-      ],
-
-      //   UserInfo: //{
-      //     employeeNo,
-      //     name,
-      //     userType: "normal",
-      //     doorRight: "1",
-      //     Valid: {
-      //       enable: true,
-      //       beginTime: "2024-01-01T00:00:00",
-      //       endTime: "2030-12-31T23:59:59",
-      //     },
-      //   },
+      },
     },
   );
-  return res.status(200).json(addUser);
 
   if (!addUser.success) {
-    fs.unlink(req.file.path, () => {});
+    fs.unlink(file.path, () => {});
     return res.status(500).json(addUser);
   }
 
-  const faceResult = await uploadFaceDirect(employeeNo, req.file.path);
-  fs.unlink(req.file.path, () => {});
+  const faceResult = await uploadFaceDirect(employeeNo, file.path);
+  fs.unlink(file.path, () => {});
   return res.json(faceResult);
 };
 
+// Register Backup (uses URL for images rather than direct upload)
 module.exports.registerBackup = async (req, res) => {
   const { employeeNo, name } = req.body;
   const file = req.file;
