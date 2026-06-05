@@ -1,47 +1,16 @@
 const path = require("path");
 const fs = require("fs");
 require("dotenv").config();
-const { hikRequest, uploadFaceDirect } = require("../utils/helperFuntions");
+const {
+  hikRequest,
+  uploadFaceDirect,
+  validateTime,
+} = require("../utils/helperFuntions");
 
 module.exports.register = async (req, res) => {
-  const { employeeNo, name, userType } = req.body;
+  const { employeeNo, name, userType, beginTime, endTime } = req.body;
   const file = req.file;
 
-  if (!employeeNo || !name || !file) {
-    if (file) {
-      fs.unlink(file.path, () => {});
-    }
-    return res
-      .status(400)
-      .json({ error: "employeeNo, name and faceImage are required" });
-  }
-
-  const allowedMimeTypes = ["image/jpeg", "image/jpg"];
-  const maxSizeBytes = 200 * 1024; // 200 KB in bytes
-
-  // Check file format and size
-  if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
-    if (file.path) {
-      fs.unlink(file.path, () => {});
-    }
-
-    return res.status(400).json({
-      error: "Image must be a JPEG/JPG and less than 200 KB",
-    });
-  }
-
-  // return res.json("Debugging: Remove later");
-
-  const allowedUserTypes = ["normal", "visitor", "blackList"];
-
-  if (userType) {
-    if (!allowedUserTypes.includes(userType)) {
-      return res
-        .status(400)
-        .json({ error: "Invalid user type", allowedUserTypes });
-    }
-  }
-  // create user first
   const addUser = await hikRequest(
     "POST",
     "/ISAPI/AccessControl/UserInfo/Record",
@@ -53,8 +22,8 @@ module.exports.register = async (req, res) => {
         doorRight: "1",
         Valid: {
           enable: true,
-          beginTime: "2024-01-01T00:00:00",
-          endTime: "2030-12-31T23:59:59",
+          beginTime,
+          endTime,
         },
       },
     },
@@ -66,7 +35,7 @@ module.exports.register = async (req, res) => {
   }
 
   const faceResult = await uploadFaceDirect(employeeNo, file.path);
-  fs.unlink(file.path, () => {}); //removed only for testing
+  fs.unlink(file.path, () => {});
   return res.json(faceResult);
 };
 

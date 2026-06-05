@@ -201,9 +201,23 @@ async function uploadFaceDirect(employeeNo, imagePath) {
   }
 }
 
+const validateTime = (value, fieldName) => {
+  // Hikvision expects exactly: YYYY-MM-DDTHH:mm:ss
+  const hikTimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+  if (!hikTimeRegex.test(value)) {
+    return `${fieldName} must be in format YYYY-MM-DDTHH:mm:ss (e.g. 2024-01-01T00:00:00)`;
+  }
+  const date = new Date(value);
+  if (isNaN(date.getTime())) {
+    return `${fieldName} is not a valid date`;
+  }
+  return null;
+};
+
 module.exports = {
   uploadFaceDirect,
   buildDigestAuth,
   hikRequest,
   parseDigestHeader,
+  validateTime,
 };
