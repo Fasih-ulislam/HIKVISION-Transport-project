@@ -4,6 +4,8 @@ const debugRoutes = require("./routes/debugRoutes");
 const userRoutes = require("./routes/userRoutes");
 const loggingRoutes = require("./routes/loggingRoutes");
 
+const basicAuth = require("./middlewares/authMiddleware");
+
 const app = express();
 
 // ***enable only when going to backup image upload path***
@@ -11,6 +13,9 @@ app.use("/uploads", express.static("uploads"));
 
 app.use(express.json({ limit: "10mb" }));
 
+// Authentication
+
+app.use(basicAuth);
 app.use("/debug", debugRoutes);
 app.use("/students", userRoutes);
 app.use("/logs", loggingRoutes);
