@@ -7,6 +7,7 @@ const userController = require("../controllers/userController");
 const {
   validateUser,
   compressImage,
+  validateUpdate,
 } = require("../middlewares/helperMiddlewares");
 
 // file uploads helper
@@ -38,6 +39,15 @@ router.post(
 
 // ─── Remove Student ───────────────────────────────────────────────────────────
 router.delete("/:employeeNo", userController.deleteStudent);
+
+// ─── Update Student ───────────────────────────────────────────────────────────
+router.put(
+  "/update/:employeeNo",
+  upload.single("faceImage"),
+  compressImage,
+  validateUpdate,
+  userController.update,
+);
 
 // ─── Get Students data ────────────────────────────────────────────────────────
 router.get("/", userController.getStudents);

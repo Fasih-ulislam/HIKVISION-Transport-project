@@ -5,38 +5,41 @@ const {
   hikRequest,
   uploadFaceDirect,
   validateTime,
+  deleteFace,
 } = require("../utils/helperFuntions");
 
 module.exports.register = async (req, res) => {
-  const { employeeNo, name, userType, beginTime, endTime } = req.body;
   const file = req.file;
+  try {
+    const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
-  const addUser = await hikRequest(
-    "POST",
-    "/ISAPI/AccessControl/UserInfo/Record",
-    {
-      UserInfo: {
-        employeeNo,
-        name,
-        userType: userType || "normal",
-        doorRight: "1",
-        Valid: {
-          enable: true,
-          beginTime,
-          endTime,
+    const addUser = await hikRequest(
+      "POST",
+      "/ISAPI/AccessControl/UserInfo/Record",
+      {
+        UserInfo: {
+          employeeNo,
+          name,
+          userType: userType || "normal",
+          doorRight: "1",
+          Valid: {
+            enable: true,
+            beginTime,
+            endTime,
+          },
         },
       },
-    },
-  );
+    );
 
-  if (!addUser.success) {
-    fs.unlink(file.path, () => {});
-    return res.status(500).json(addUser);
+    if (!addUser.success) {
+      return res.status(500).json(addUser);
+    }
+
+    const faceResult = await uploadFaceDirect(employeeNo, file.path);
+    return res.json(faceResult);
+  } finally {
+    if (file) fs.unlink(file.path, () => {});
   }
-
-  const faceResult = await uploadFaceDirect(employeeNo, file.path);
-  fs.unlink(file.path, () => {});
-  return res.json(faceResult);
 };
 
 // Register Backup (uses URL for images rather than direct upload)
@@ -126,6 +129,8 @@ module.exports.deleteStudent = async (req, res) => {
 
   return res.json({ success: true, message: `Student ${employeeNo} removed` });
 };
+
+//get Students
 module.exports.getStudents = async (req, res) => {
   const searchID = "1";
 
@@ -159,4 +164,92 @@ module.exports.getStudents = async (req, res) => {
     limit,
     data: result.data,
   });
+};
+
+// Update Student
+module.exports.update = async (req, res) => {
+  const file = req.file;
+  try {
+    const { employeeNo } = req.params;
+
+    const { userType, beginTime, endTime, name } = req.body || {};
+
+    // ─── Update user info (only if any of these fields are passed) ──────────────
+    if (userType || beginTime || endTime || name) {
+      // Fetch current user info first to fill in unchanged fields
+      const currentUser = await hikRequest(
+        "POST",
+        "/ISAPI/AccessControl/UserInfo/Search?format=json",
+        {
+          UserInfoSearchCond: {
+            searchID: "1",
+            searchResultPosition: 0,
+            maxResults: 1,
+            EmployeeNoList: [{ employeeNo }],
+          },
+        },
+      );
+
+      if (
+        !currentUser.success ||
+        !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
+      ) {
+        return res.status(404).json({ error: "User not found on device" });
+      }
+
+      const existing = currentUser.data.UserInfoSearch.UserInfo[0];
+
+      const updateResult = await hikRequest(
+        "PUT",
+        "/ISAPI/AccessControl/UserInfo/Modify?format=json",
+        {
+          UserInfo: {
+            employeeNo,
+            name: name || existing.name,
+            userType: userType || existing.userType,
+            doorRight: existing.doorRight || "1",
+            Valid: {
+              enable: true,
+              beginTime: beginTime || existing.Valid?.beginTime,
+              endTime: endTime || existing.Valid?.endTime,
+            },
+          },
+        },
+      );
+
+      if (!updateResult.success) {
+        return res.status(500).json(updateResult);
+      }
+    }
+
+    // ─── Update face image (only if file was passed) ─────────────────────────────
+    if (file) {
+      const allowedMimeTypes = ["image/jpeg", "image/jpg"];
+      const maxSizeBytes = 200 * 1024;
+
+      if (
+        !allowedMimeTypes.includes(file.mimetype) ||
+        file.size > maxSizeBytes
+      ) {
+        return res
+          .status(400)
+          .json({ error: "Image must be a JPEG/JPG and less than 200 KB" });
+      }
+
+      const deleted = await deleteFace(employeeNo);
+      if (!deleted.success) {
+        console.log(deleted);
+      }
+
+      const faceResult = await uploadFaceDirect(employeeNo, file.path, true);
+
+      if (!faceResult.success) {
+        return res.status(500).json(faceResult);
+      }
+    }
+
+    return res.json({ success: true, message: "User updated successfully" });
+  } finally {
+    if (file) fs.unlink(file.path, () => {});
+  }
 };

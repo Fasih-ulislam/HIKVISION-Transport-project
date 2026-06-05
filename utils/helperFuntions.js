@@ -88,7 +88,7 @@ async function hikRequest(method, endpoint, data = null) {
 }
 
 // direct face upload helper
-async function uploadFaceDirect(employeeNo, imagePath) {
+async function uploadFaceDirect(employeeNo, imagePath, update = false) {
   const endpoint = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
 
   const url = `${DEVICE}${endpoint}`;
@@ -183,18 +183,17 @@ async function uploadFaceDirect(employeeNo, imagePath) {
       data: response.data,
     };
   } catch (err) {
-    const result = await hikRequest(
-      "PUT",
-      "/ISAPI/AccessControl/UserInfo/Delete",
-      {
+    let result = null;
+    if (!update) {
+      result = await hikRequest("PUT", "/ISAPI/AccessControl/UserInfo/Delete", {
         UserInfoDelCond: {
           EmployeeNoList: [{ employeeNo }],
         },
-      },
-    );
+      });
+    }
     return {
       success: false,
-      studentRemoved: result.success,
+      studentRemoved: result?.success || false,
       status: err.response?.status,
       error: err.response?.data || err.message,
     };
@@ -214,10 +213,25 @@ const validateTime = (value, fieldName) => {
   return null;
 };
 
+// ─── Delete existing face from device ────────────────────────────────────────
+async function deleteFace(employeeNo) {
+  return await hikRequest(
+    "PUT",
+    "/ISAPI/Intelligent/FDLib/FDSetUp?format=json",
+    {
+      faceLibType: "blackFD",
+      FDID: "1",
+      FPID: employeeNo,
+      deleteFP: true,
+    },
+  );
+}
+
 module.exports = {
   uploadFaceDirect,
   buildDigestAuth,
   hikRequest,
   parseDigestHeader,
   validateTime,
+  deleteFace,
 };

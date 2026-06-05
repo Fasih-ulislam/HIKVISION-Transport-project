@@ -4,12 +4,65 @@ const sharp = require("sharp");
 
 const { validateTime } = require("../utils/helperFuntions");
 
+module.exports.validateUpdate = (req, res, next) => {
+  const file = req.file;
+
+  const { employeeNo } = req.params;
+
+  const { userType, beginTime, endTime, name } = req.body || {};
+
+  // At least one field must be provided
+  if (!userType && !beginTime && !endTime && !file && !name) {
+    return res.status(400).json({
+      error:
+        "At least one field must be provided to update: name, userType, beginTime, endTime, faceImage",
+    });
+  }
+
+  const allowedUserTypes = ["normal", "visitor", "blackList"];
+  if (userType && !allowedUserTypes.includes(userType)) {
+    return res
+      .status(400)
+      .json({ error: "Invalid user type", allowedUserTypes });
+  }
+
+  const hikTimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+  const validateTime = (value, fieldName) => {
+    if (!hikTimeRegex.test(value)) {
+      return `${fieldName} must be in format YYYY-MM-DDTHH:mm:ss (e.g. 2024-01-01T00:00:00)`;
+    }
+    if (isNaN(new Date(value).getTime())) {
+      return `${fieldName} is not a valid date`;
+    }
+    return null;
+  };
+
+  if (beginTime) {
+    const err = validateTime(beginTime, "beginTime");
+    if (err) {
+      return res.status(400).json({ error: err });
+    }
+  }
+
+  if (endTime) {
+    const err = validateTime(endTime, "endTime");
+    if (err) {
+      return res.status(400).json({ error: err });
+    }
+  }
+
+  if (beginTime && endTime && new Date(endTime) <= new Date(beginTime)) {
+    return res.status(400).json({ error: "endTime must be after beginTime" });
+  }
+
+  next();
+};
+
 module.exports.validateUser = (req, res, next) => {
   const { employeeNo, name, userType, beginTime, endTime } = req.body;
   const file = req.file;
 
   if (!employeeNo || !name || !file) {
-    if (file) fs.unlink(file.path, () => {});
     return res
       .status(400)
       .json({ error: "employeeNo, name and faceImage are required" });
@@ -19,7 +72,6 @@ module.exports.validateUser = (req, res, next) => {
   const maxSizeBytes = 200 * 1024;
 
   if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
-    if (file.path) fs.unlink(file.path, () => {});
     return res
       .status(400)
       .json({ error: "Image must be a JPEG/JPG and less than 200 KB" });
@@ -27,7 +79,6 @@ module.exports.validateUser = (req, res, next) => {
 
   const allowedUserTypes = ["normal", "visitor", "blackList"];
   if (userType && !allowedUserTypes.includes(userType)) {
-    fs.unlink(file.path, () => {});
     return res
       .status(400)
       .json({ error: "Invalid user type", allowedUserTypes });
@@ -38,18 +89,15 @@ module.exports.validateUser = (req, res, next) => {
 
   const beginError = validateTime(resolvedBeginTime, "beginTime");
   if (beginError) {
-    fs.unlink(file.path, () => {});
     return res.status(400).json({ error: beginError });
   }
 
   const endError = validateTime(resolvedEndTime, "endTime");
   if (endError) {
-    fs.unlink(file.path, () => {});
     return res.status(400).json({ error: endError });
   }
 
   if (new Date(resolvedEndTime) <= new Date(resolvedBeginTime)) {
-    fs.unlink(file.path, () => {});
     return res.status(400).json({ error: "endTime must be after beginTime" });
   }
   req.body.beginTime = resolvedBeginTime;
@@ -133,7 +181,7 @@ module.exports.compressImage = async (req, res, next) => {
 
     next();
   } catch (err) {
-    fs.unlink(file.path, () => {});
+    fs.unlink(filePath, () => {});
     console.error("Image compression failed:", err);
     return res
       .status(500)
