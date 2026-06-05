@@ -7,7 +7,30 @@ module.exports.register = async (req, res) => {
   const { employeeNo, name, userType } = req.body;
   const file = req.file;
 
-  //return res.json("Debugging: Remove later");
+  if (!employeeNo || !name || !file) {
+    if (file) {
+      fs.unlink(file.path, () => {});
+    }
+    return res
+      .status(400)
+      .json({ error: "employeeNo, name and faceImage are required" });
+  }
+
+  const allowedMimeTypes = ["image/jpeg", "image/jpg"];
+  const maxSizeBytes = 200 * 1024; // 200 KB in bytes
+
+  // Check file format and size
+  if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
+    if (file.path) {
+      fs.unlink(file.path, () => {});
+    }
+
+    return res.status(400).json({
+      error: "Image must be a JPEG/JPG and less than 200 KB",
+    });
+  }
+
+  // return res.json("Debugging: Remove later");
 
   const allowedUserTypes = ["normal", "visitor", "blackList"];
 
@@ -43,7 +66,7 @@ module.exports.register = async (req, res) => {
   }
 
   const faceResult = await uploadFaceDirect(employeeNo, file.path);
-  fs.unlink(file.path, () => {});
+  fs.unlink(file.path, () => {}); //removed only for testing
   return res.json(faceResult);
 };
 
@@ -87,7 +110,6 @@ module.exports.registerBackup = async (req, res) => {
 
   // Step B: Upload face — device fetches it from our server by URL
   const faceURL = `http://${process.env.SERVER_IP}:${process.env.PORT || 3000}/uploads/${file.filename}`;
-  console.log();
 
   const addFace = await hikRequest(
     "POST",
