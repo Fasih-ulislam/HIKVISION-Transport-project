@@ -26,9 +26,12 @@ app.get("/health-check", (req, res) => {
 
 // Authentication on all routes
 app.use(basicAuth);
-app.use("/debug", debugRoutes);
+// Protected Routes
 app.use("/students", userRoutes);
 app.use("/logs", loggingRoutes);
+
+// Debug Routes (enable when testing)
+// app.use("/debug", debugRoutes);
 
 // Start server
 app.listen(process.env.PORT || 3000, () => {
