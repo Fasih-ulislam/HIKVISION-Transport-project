@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { startAlertStream } = require("../services/alertStreamService");
 
 const connectDB = async () => {
   try {
@@ -7,6 +8,7 @@ const connectDB = async () => {
     console.log(
       `MongoDB Connected: ${conn.connection.host}/${conn.connection.name}`,
     );
+    startAlertStream();
   } catch (error) {
     console.error("MongoDB Connection Error:", error.message);
 

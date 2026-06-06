@@ -9,15 +9,15 @@ const connectDB = require("./config/db");
 
 const app = express();
 
-// Connect database
-connectDB();
+// Connect database (enable when logging)
+// connectDB();
 
 // ***enable only when going to backup image upload path***
 //app.use("/uploads", express.static("uploads"));
 
 app.use(express.json({ limit: "10mb" }));
 
-//app.use(logger); //comment when testing
+//app.use(logger); //enable when logging
 
 //basic health check for server
 app.get("/health-check", (req, res) => {
