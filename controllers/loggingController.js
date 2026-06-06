@@ -9,8 +9,6 @@ module.exports.deviceLogs = async (req, res) => {
     filter, // "verified" | "failed" | "all"
   } = req.query;
 
-  // minor codes for DS-K1T642MFW face terminal
-  // 0 = all, 75 = face verified, 76 = face failed
   const filterMap = {
     all: { major: 5, minor: 0 },
     verified: { major: 5, minor: 75 }, // face recognized, access granted
