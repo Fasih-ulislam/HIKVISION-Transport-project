@@ -17,7 +17,7 @@ connectDB();
 
 app.use(express.json({ limit: "10mb" }));
 
-app.use(logger);
+//app.use(logger); //comment when testing
 
 //basic health check for server
 app.get("/health-check", (req, res) => {
