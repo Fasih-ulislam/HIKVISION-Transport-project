@@ -84,7 +84,7 @@ module.exports.validateUser = (req, res, next) => {
       .json({ error: "Invalid user type", allowedUserTypes });
   }
 
-  const resolvedBeginTime = beginTime || "2026-01-01T00:00:00";
+  const resolvedBeginTime = beginTime || new Date().toISOString().slice(0, 19);
   const resolvedEndTime = endTime || "2030-12-31T23:59:59";
 
   const beginError = validateTime(resolvedBeginTime, "beginTime");
