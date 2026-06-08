@@ -188,3 +188,145 @@ module.exports.compressImage = async (req, res, next) => {
       .json({ message: "Image compression failed", error: err.message });
   }
 };
+
+// Process BLOB images
+module.exports.processBlobImage = async (req, res, next) => {
+  if (!req.file) return next();
+
+  try {
+    const inputBuffer = req.file.buffer; // raw blob from multer memoryStorage
+
+    // Validate it's actually an image
+    const metadata = await sharp(inputBuffer).metadata();
+    if (!metadata.format) {
+      return res.status(400).json({ error: "Could not decode image data" });
+    }
+
+    console.log(
+      `Input format: ${metadata.format}, dimensions: ${metadata.width}x${metadata.height}`,
+    );
+
+    // Convert to JPEG and compress in one step
+    const filename = `${Date.now()}.jpg`;
+    const filePath = `uploads/${filename}`;
+
+    const targetSizeBytes = 200 * 1024;
+    let outputBuffer;
+    let usedWidth = metadata.width;
+    let usedQuality = 85;
+
+    const widthSteps = [1200, 1000, 800, 600, 400];
+
+    outer: for (const width of widthSteps) {
+      if (width >= metadata.width) continue;
+
+      for (let quality = 85; quality >= 40; quality -= 10) {
+        outputBuffer = await sharp(inputBuffer)
+          .rotate()
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+
+        if (outputBuffer.length <= targetSizeBytes) {
+          usedWidth = width;
+          usedQuality = quality;
+          break outer;
+        }
+      }
+    }
+
+    // If already small enough or loop didn't trigger
+    if (!outputBuffer || outputBuffer.length > targetSizeBytes) {
+      outputBuffer = await sharp(inputBuffer)
+        .rotate()
+        .resize({ width: 400, withoutEnlargement: true })
+        .jpeg({ quality: 40 })
+        .toBuffer();
+    }
+
+    fs.writeFileSync(filePath, outputBuffer);
+
+    // Overwrite req.file to look exactly like before
+    req.file = {
+      filename,
+      path: filePath,
+      mimetype: "image/jpeg",
+      size: outputBuffer.length,
+      buffer: undefined, // clear raw buffer from memory
+    };
+
+    console.log(
+      `[processBlobImage] ${metadata.format} blob → JPEG ${(outputBuffer.length / 1024).toFixed(1)}KB (${usedWidth}px @ quality ${usedQuality})`,
+    );
+
+    next();
+  } catch (err) {
+    return res
+      .status(400)
+      .json({ error: "Failed to process image", detail: err.message });
+  }
+};
+
+module.exports.decodeBase64Image = async (req, res, next) => {
+  const image = req.body.faceImage;
+  if (!image) return next();
+
+  const base64Regex = /^data:image\/(png|jpeg|jpg|webp|heic|bmp);base64,/i;
+  if (!base64Regex.test(image)) {
+    return res
+      .status(400)
+      .json({ error: "image must be a valid base64 encoded image string" });
+  }
+
+  try {
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+    const inputBuffer = Buffer.from(base64Data, "base64");
+
+    const metadata = await sharp(inputBuffer).metadata();
+    if (!metadata.format) {
+      return res.status(400).json({ error: "Could not decode image" });
+    }
+
+    const targetSizeBytes = 200 * 1024;
+    let outputBuffer;
+
+    const widthSteps = [1200, 1000, 800, 600, 400];
+    outer: for (const width of widthSteps) {
+      if (width >= metadata.width) continue;
+      for (let quality = 85; quality >= 40; quality -= 10) {
+        outputBuffer = await sharp(inputBuffer)
+          .rotate()
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+        if (outputBuffer.length <= targetSizeBytes) break outer;
+      }
+    }
+
+    if (!outputBuffer || outputBuffer.length > targetSizeBytes) {
+      outputBuffer = await sharp(inputBuffer)
+        .rotate()
+        .resize({ width: 400, withoutEnlargement: true })
+        .jpeg({ quality: 40 })
+        .toBuffer();
+    }
+
+    const filename = `${Date.now()}.jpg`;
+    const filePath = `uploads/${filename}`;
+    fs.writeFileSync(filePath, outputBuffer);
+
+    req.file = {
+      filename,
+      path: filePath,
+      mimetype: "image/jpeg",
+      size: outputBuffer.length,
+    };
+
+    next();
+  } catch (err) {
+    fs.unlink(req.file.path, () => {});
+    return res
+      .status(400)
+      .json({ error: "Failed to process image", detail: err.message });
+  }
+};
