@@ -4,97 +4,89 @@ const sharp = require("sharp");
 
 const { validateTime, getLocalISOTime } = require("../utils/helperFuntions");
 
-module.exports.validateUpdate = (req, res, next) => {
-  const file = req.file;
-
-  const { employeeNo } = req.params;
-
-  const { userType, beginTime, endTime, name } = req.body || {};
-
-  // At least one field must be provided
-  if (!userType && !beginTime && !endTime && !file && !name) {
-    return res.status(400).json({
-      error:
-        "At least one field must be provided to update: name, userType, beginTime, endTime, faceImage",
-    });
-  }
-
-  const allowedUserTypes = ["normal", "visitor", "blackList"];
-  if (userType && !allowedUserTypes.includes(userType)) {
-    return res
-      .status(400)
-      .json({ error: "Invalid user type", allowedUserTypes });
-  }
-
-  const hikTimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
-
-  if (beginTime) {
-    const err = validateTime(beginTime, "beginTime");
-    if (err) {
-      return res.status(400).json({ error: err });
-    }
-  }
-
-  if (endTime) {
-    const err = validateTime(endTime, "endTime");
-    if (err) {
-      return res.status(400).json({ error: err });
-    }
-  }
-
-  if (beginTime && endTime && new Date(endTime) <= new Date(beginTime)) {
-    return res.status(400).json({ error: "endTime must be after beginTime" });
-  }
-
-  next();
-};
-
 module.exports.validateUser = (req, res, next) => {
   const { employeeNo, name, userType, beginTime, endTime } = req.body;
   const file = req.file;
 
-  if (!employeeNo || !name || !file) {
-    return res
-      .status(400)
-      .json({ error: "employeeNo, name and faceImage are required" });
+  try {
+    if (!employeeNo || !name || !file) {
+      throw new Error("employeeNo, name and faceImage are required");
+    }
+
+    const allowedMimeTypes = ["image/jpeg", "image/jpg"];
+    const maxSizeBytes = 200 * 1024;
+
+    if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
+      throw new Error("Image must be a JPEG/JPG and less than 200 KB");
+    }
+
+    const allowedUserTypes = ["normal", "visitor", "blackList"];
+    if (userType && !allowedUserTypes.includes(userType)) {
+      throw new Error(
+        `Invalid user type. Allowed: ${allowedUserTypes.join(", ")}`,
+      );
+    }
+
+    const resolvedBeginTime = beginTime || getLocalISOTime();
+    const resolvedEndTime = endTime || "2030-12-31T23:59:59";
+
+    const beginError = validateTime(resolvedBeginTime, "beginTime");
+    if (beginError) throw new Error(beginError);
+
+    const endError = validateTime(resolvedEndTime, "endTime");
+    if (endError) throw new Error(endError);
+
+    if (new Date(resolvedEndTime) <= new Date(resolvedBeginTime)) {
+      throw new Error("endTime must be after beginTime");
+    }
+
+    req.body.beginTime = resolvedBeginTime;
+    req.body.endTime = resolvedEndTime;
+
+    next();
+  } catch (err) {
+    if (file) fs.unlink(file.path, () => {});
+    return res.status(400).json({ error: err.message });
   }
+};
 
-  const allowedMimeTypes = ["image/jpeg", "image/jpg"];
-  const maxSizeBytes = 200 * 1024;
+module.exports.validateUpdate = (req, res, next) => {
+  const file = req.file;
+  const { userType, beginTime, endTime, name } = req.body || {};
 
-  if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
-    return res
-      .status(400)
-      .json({ error: "Image must be a JPEG/JPG and less than 200 KB" });
+  try {
+    if (!userType && !beginTime && !endTime && !file && !name) {
+      throw new Error(
+        "At least one field must be provided to update: name, userType, beginTime, endTime, faceImage",
+      );
+    }
+
+    const allowedUserTypes = ["normal", "visitor", "blackList"];
+    if (userType && !allowedUserTypes.includes(userType)) {
+      throw new Error(
+        `Invalid user type. Allowed: ${allowedUserTypes.join(", ")}`,
+      );
+    }
+
+    if (beginTime) {
+      const err = validateTime(beginTime, "beginTime");
+      if (err) throw new Error(err);
+    }
+
+    if (endTime) {
+      const err = validateTime(endTime, "endTime");
+      if (err) throw new Error(err);
+    }
+
+    if (beginTime && endTime && new Date(endTime) <= new Date(beginTime)) {
+      throw new Error("endTime must be after beginTime");
+    }
+
+    next();
+  } catch (err) {
+    if (file) fs.unlink(file.path, () => {});
+    return res.status(400).json({ error: err.message });
   }
-
-  const allowedUserTypes = ["normal", "visitor", "blackList"];
-  if (userType && !allowedUserTypes.includes(userType)) {
-    return res
-      .status(400)
-      .json({ error: "Invalid user type", allowedUserTypes });
-  }
-
-  const resolvedBeginTime = beginTime || getLocalISOTime();
-  const resolvedEndTime = endTime || "2030-12-31T23:59:59";
-
-  const beginError = validateTime(resolvedBeginTime, "beginTime");
-  if (beginError) {
-    return res.status(400).json({ error: beginError });
-  }
-
-  const endError = validateTime(resolvedEndTime, "endTime");
-  if (endError) {
-    return res.status(400).json({ error: endError });
-  }
-
-  if (new Date(resolvedEndTime) <= new Date(resolvedBeginTime)) {
-    return res.status(400).json({ error: "endTime must be after beginTime" });
-  }
-  req.body.beginTime = resolvedBeginTime;
-  req.body.endTime = resolvedEndTime;
-
-  next();
 };
 
 // ─── Image compression middleware ────────────────────────────────────────────
