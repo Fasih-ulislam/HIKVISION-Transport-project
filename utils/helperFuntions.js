@@ -227,6 +227,14 @@ async function deleteFace(employeeNo) {
   );
 }
 
+function getLocalISOTime() {
+  const now = new Date();
+  // PKT is UTC+5, offset = 5 * 60 minutes
+  const offsetMs = 5 * 60 * 60 * 1000;
+  const local = new Date(now.getTime() + offsetMs);
+  return local.toISOString().slice(0, 19);
+}
+
 module.exports = {
   uploadFaceDirect,
   buildDigestAuth,
@@ -234,4 +242,5 @@ module.exports = {
   parseDigestHeader,
   validateTime,
   deleteFace,
+  getLocalISOTime,
 };

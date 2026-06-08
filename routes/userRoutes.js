@@ -50,4 +50,7 @@ router.put(
 // ─── Get Students data ────────────────────────────────────────────────────────
 router.get("/", userController.getStudents);
 
+// Get Student by ID
+router.get("/:employeeNo", userController.getStudent);
+
 module.exports = router;

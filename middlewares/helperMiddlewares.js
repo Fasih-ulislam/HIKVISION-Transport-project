@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const sharp = require("sharp");
 
-const { validateTime } = require("../utils/helperFuntions");
+const { validateTime, getLocalISOTime } = require("../utils/helperFuntions");
 
 module.exports.validateUpdate = (req, res, next) => {
   const file = req.file;
@@ -27,15 +27,6 @@ module.exports.validateUpdate = (req, res, next) => {
   }
 
   const hikTimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
-  const validateTime = (value, fieldName) => {
-    if (!hikTimeRegex.test(value)) {
-      return `${fieldName} must be in format YYYY-MM-DDTHH:mm:ss (e.g. 2024-01-01T00:00:00)`;
-    }
-    if (isNaN(new Date(value).getTime())) {
-      return `${fieldName} is not a valid date`;
-    }
-    return null;
-  };
 
   if (beginTime) {
     const err = validateTime(beginTime, "beginTime");
@@ -84,7 +75,7 @@ module.exports.validateUser = (req, res, next) => {
       .json({ error: "Invalid user type", allowedUserTypes });
   }
 
-  const resolvedBeginTime = beginTime || new Date().toISOString().slice(0, 19);
+  const resolvedBeginTime = beginTime || getLocalISOTime();
   const resolvedEndTime = endTime || "2030-12-31T23:59:59";
 
   const beginError = validateTime(resolvedBeginTime, "beginTime");

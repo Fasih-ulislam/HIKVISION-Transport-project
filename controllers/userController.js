@@ -27,6 +27,12 @@ module.exports.register = async (req, res) => {
             beginTime,
             endTime,
           },
+          RightPlan: [
+            {
+              doorNo: 1,
+              planTemplateNo: "1",
+            },
+          ],
         },
       },
     );
@@ -252,4 +258,21 @@ module.exports.update = async (req, res) => {
   } finally {
     if (file) fs.unlink(file.path, () => {});
   }
+};
+
+module.exports.getStudent = async (req, res) => {
+  const { employeeNo } = req.params;
+  const result = await hikRequest(
+    "POST",
+    "/ISAPI/AccessControl/UserInfo/Search?format=json",
+    {
+      UserInfoSearchCond: {
+        searchID: "1",
+        searchResultPosition: 0,
+        maxResults: 1,
+        EmployeeNoList: [{ employeeNo }],
+      },
+    },
+  );
+  return res.json(result);
 };
