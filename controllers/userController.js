@@ -117,6 +117,27 @@ module.exports.registerBackup = async (req, res) => {
 module.exports.deleteStudent = async (req, res) => {
   const { employeeNo } = req.params;
 
+  // Fetch current user info first to fill in unchanged fields
+  const currentUser = await hikRequest(
+    "POST",
+    "/ISAPI/AccessControl/UserInfo/Search?format=json",
+    {
+      UserInfoSearchCond: {
+        searchID: "1",
+        searchResultPosition: 0,
+        maxResults: 1,
+        EmployeeNoList: [{ employeeNo }],
+      },
+    },
+  );
+
+  if (
+    !currentUser.success ||
+    !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
+  ) {
+    return res.status(404).json({ error: "User not found on device" });
+  }
+
   const result = await hikRequest(
     "PUT",
     "/ISAPI/AccessControl/UserInfo/Delete",
