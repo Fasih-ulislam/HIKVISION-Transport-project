@@ -1,2 +1,5 @@
 .env
 node_modules
+scripts/venv/
+scripts/data/*
+!scripts/data/.gitkeep    # keep the folder, ignore everything inside it

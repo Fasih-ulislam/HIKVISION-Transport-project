@@ -254,15 +254,16 @@ module.exports.decodeBase64Image = async (req, res, next) => {
   const image = req.body.faceImage;
   if (!image) return next();
 
-  const base64Regex = /^data:image\/(png|jpeg|jpg|webp|heic|bmp);base64,/i;
-  if (!base64Regex.test(image)) {
-    return res
-      .status(400)
-      .json({ error: "image must be a valid base64 encoded image string" });
-  }
-
   try {
-    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+    // Strip prefix if present, otherwise treat as raw base64
+    const base64Data = image
+      .replace(/^data:image\/\w+;base64,/, "")
+      .replace(/\s+/g, "");
+
+    if (!base64Data) {
+      return res.status(400).json({ error: "image field is empty" });
+    }
+
     const inputBuffer = Buffer.from(base64Data, "base64");
 
     const metadata = await sharp(inputBuffer).metadata();
@@ -307,7 +308,6 @@ module.exports.decodeBase64Image = async (req, res, next) => {
 
     next();
   } catch (err) {
-    fs.unlink(req.file.path, () => {});
     return res
       .status(400)
       .json({ error: "Failed to process image", detail: err.message });
