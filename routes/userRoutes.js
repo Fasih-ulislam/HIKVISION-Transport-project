@@ -8,17 +8,18 @@ const {
   validateUser,
   decodeBase64Image,
   validateUpdate,
+  compressImage,
 } = require("../middlewares/helperMiddlewares");
 
 // file uploads helper
-// const storage = multer.diskStorage({
-//   destination: "uploads/",
-//   filename: (req, file, cb) => {
-//     const ext = path.extname(file.originalname);
-//     cb(null, `${Date.now()}${ext}`);
-//   },
-// });
-// const upload = multer({ storage });
+const storage = multer.diskStorage({
+  destination: "uploads/",
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}${ext}`);
+  },
+});
+const upload = multer({ storage });
 
 // ─── Register Student (direct upload approach) ───────────────────────────────
 router.post(
@@ -28,9 +29,18 @@ router.post(
   userController.register,
 );
 
+// ─── Register Student by Image direct (backup) ────────────────────────────────────────
+router.post(
+  "/register-backup-v1",
+  upload.single("faceImage"),
+  compressImage,
+  validateUser,
+  userController.register,
+);
+
 // // ─── Register Student by URL (backup) ────────────────────────────────────────
 // router.post(
-//   "/register-backup",
+//   "/register-backup-v2",
 //   upload.single("faceImage"),
 //   decodeBase64Image,
 //   userController.registerBackup,

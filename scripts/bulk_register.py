@@ -8,11 +8,11 @@ import sys
 csv.field_size_limit(sys.maxsize)  # remove the field size cap
 
 # ─── Config ───────────────────────────────────────────────
-API_URL = "http://172.17.30.228:3000/students/register"
+API_URL = "http://192.168.12.128:3000/students/register"
 INPUT_FILE = "data/students.csv"
 SUCCESS_FILE = "data/success.csv"
 FAILED_FILE = "data/failed.csv"
-DELAY_BETWEEN_REQUESTS = 1  # seconds — increase if device gets overwhelmed
+DELAY_BETWEEN_REQUESTS = 0.2  # seconds — increase if device gets overwhelmed
 REQUEST_TIMEOUT = 30        # seconds per request
 MAX_ROWS = None  # set to None to process all rows
 
