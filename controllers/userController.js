@@ -6,9 +6,15 @@
 // The orchestrator is responsible for calling these once per device (via
 // Promise.allSettled) and for writing the aggregated response to `res`.
 // Nothing in this file writes to `res` or knows that other devices exist.
+//
+// FILE OWNERSHIP: req.file (when present) is owned by the orchestrator,
+// not by these functions. Multiple devices read the same uploaded file
+// concurrently across their isolated calls, so no function in this file
+// may unlink/delete it — the orchestrator deletes it exactly once, after
+// every device has settled. register() and update() below only read
+// file.path; they never touch the filesystem to clean it up.
 
 const path = require("path");
-const fs = require("fs");
 require("dotenv").config();
 const {
   hikRequest,
@@ -24,43 +30,39 @@ const {
  */
 module.exports.register = async (device, req) => {
   const file = req.file;
-  try {
-    const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
+  const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
-    const addUser = await hikRequest(
-      device,
-      "POST",
-      "/ISAPI/AccessControl/UserInfo/Record",
-      {
-        UserInfo: {
-          employeeNo,
-          name,
-          userType: userType || "normal",
-          doorRight: "1",
-          Valid: {
-            enable: true,
-            beginTime,
-            endTime,
-          },
-          RightPlan: [
-            {
-              doorNo: 1,
-              planTemplateNo: "1",
-            },
-          ],
+  const addUser = await hikRequest(
+    device,
+    "POST",
+    "/ISAPI/AccessControl/UserInfo/Record",
+    {
+      UserInfo: {
+        employeeNo,
+        name,
+        userType: userType || "normal",
+        doorRight: "1",
+        Valid: {
+          enable: true,
+          beginTime,
+          endTime,
         },
+        RightPlan: [
+          {
+            doorNo: 1,
+            planTemplateNo: "1",
+          },
+        ],
       },
-    );
+    },
+  );
 
-    if (!addUser.success) {
-      return { success: false, status: 500, ...addUser };
-    }
-
-    const faceResult = await uploadFaceDirect(device, employeeNo, file.path);
-    return { status: faceResult.success ? 200 : 500, ...faceResult };
-  } finally {
-    if (file) fs.unlink(file.path, () => {});
+  if (!addUser.success) {
+    return { success: false, status: 500, ...addUser };
   }
+
+  const faceResult = await uploadFaceDirect(device, employeeNo, file.path);
+  return { status: faceResult.success ? 200 : 500, ...faceResult };
 };
 
 // Register Backup (uses URL for images rather than direct upload)
@@ -102,7 +104,6 @@ module.exports.registerBackup = async (device, req) => {
   );
 
   if (!addUser.success) {
-    fs.unlink(file.path, () => {});
     return {
       success: false,
       status: 500,
@@ -125,8 +126,6 @@ module.exports.registerBackup = async (device, req) => {
       faceURL,
     },
   );
-
-  fs.unlink(file.path, () => {}); // cleanup regardless of result
 
   if (!addFace.success) {
     return {
@@ -247,100 +246,93 @@ module.exports.getStudents = async (device, req) => {
  */
 module.exports.update = async (device, req) => {
   const file = req.file;
-  try {
-    const { employeeNo } = req.params;
-    const { userType, beginTime, endTime, name } = req.body || {};
+  const { employeeNo } = req.params;
+  const { userType, beginTime, endTime, name } = req.body || {};
 
-    // ─── Update user info (only if any of these fields are passed) ──────────────
-    if (userType || beginTime || endTime || name) {
-      const currentUser = await hikRequest(
-        device,
-        "POST",
-        "/ISAPI/AccessControl/UserInfo/Search?format=json",
-        {
-          UserInfoSearchCond: {
-            searchID: "1",
-            searchResultPosition: 0,
-            maxResults: 1,
-            EmployeeNoList: [{ employeeNo }],
-          },
+  // ─── Update user info (only if any of these fields are passed) ──────────────
+  if (userType || beginTime || endTime || name) {
+    const currentUser = await hikRequest(
+      device,
+      "POST",
+      "/ISAPI/AccessControl/UserInfo/Search?format=json",
+      {
+        UserInfoSearchCond: {
+          searchID: "1",
+          searchResultPosition: 0,
+          maxResults: 1,
+          EmployeeNoList: [{ employeeNo }],
         },
-      );
+      },
+    );
 
-      if (
-        !currentUser.success ||
-        !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
-      ) {
-        return {
-          success: false,
-          status: 404,
-          error: "User not found on device",
-        };
-      }
-
-      const existing = currentUser.data.UserInfoSearch.UserInfo[0];
-
-      const updateResult = await hikRequest(
-        device,
-        "PUT",
-        "/ISAPI/AccessControl/UserInfo/Modify?format=json",
-        {
-          UserInfo: {
-            employeeNo,
-            name: name || existing.name,
-            userType: userType || existing.userType,
-            doorRight: existing.doorRight || "1",
-            Valid: {
-              enable: true,
-              beginTime: beginTime || existing.Valid?.beginTime,
-              endTime: endTime || existing.Valid?.endTime,
-            },
-          },
-        },
-      );
-
-      if (!updateResult.success) {
-        return { success: false, status: 500, ...updateResult };
-      }
+    if (
+      !currentUser.success ||
+      !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
+    ) {
+      return {
+        success: false,
+        status: 404,
+        error: "User not found on device",
+      };
     }
 
-    // ─── Update face image (only if file was passed) ─────────────────────────────
-    if (file) {
-      const allowedMimeTypes = ["image/jpeg", "image/jpg"];
-      const maxSizeBytes = 200 * 1024;
+    const existing = currentUser.data.UserInfoSearch.UserInfo[0];
 
-      if (
-        !allowedMimeTypes.includes(file.mimetype) ||
-        file.size > maxSizeBytes
-      ) {
-        return {
-          success: false,
-          status: 400,
-          error: "Image must be a JPEG/JPG and less than 200 KB",
-        };
-      }
+    const updateResult = await hikRequest(
+      device,
+      "PUT",
+      "/ISAPI/AccessControl/UserInfo/Modify?format=json",
+      {
+        UserInfo: {
+          employeeNo,
+          name: name || existing.name,
+          userType: userType || existing.userType,
+          doorRight: existing.doorRight || "1",
+          Valid: {
+            enable: true,
+            beginTime: beginTime || existing.Valid?.beginTime,
+            endTime: endTime || existing.Valid?.endTime,
+          },
+        },
+      },
+    );
 
-      const deleted = await deleteFace(device, employeeNo);
-      if (!deleted.success) {
-        console.log(deleted);
-      }
-
-      const faceResult = await uploadFaceDirect(
-        device,
-        employeeNo,
-        file.path,
-        true,
-      );
-
-      if (!faceResult.success) {
-        return { success: false, status: 500, ...faceResult };
-      }
+    if (!updateResult.success) {
+      return { success: false, status: 500, ...updateResult };
     }
-
-    return { success: true, status: 200, message: "User updated successfully" };
-  } finally {
-    if (file) fs.unlink(file.path, () => {});
   }
+
+  // ─── Update face image (only if file was passed) ─────────────────────────────
+  if (file) {
+    const allowedMimeTypes = ["image/jpeg", "image/jpg"];
+    const maxSizeBytes = 200 * 1024;
+
+    if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
+      return {
+        success: false,
+        status: 400,
+        error: "Image must be a JPEG/JPG and less than 200 KB",
+      };
+    }
+
+    const deleted = await deleteFace(device, employeeNo);
+    if (!deleted.success) {
+      console.log(deleted);
+    }
+
+    const faceResult = await uploadFaceDirect(
+      device,
+      employeeNo,
+      file.path,
+      true,
+    );
+
+    if (!faceResult.success) {
+      return { success: false, status: 500, ...faceResult };
+    }
+  }
+
+  return { success: true, status: 200, message: "User updated successfully" };
 };
 
 /**

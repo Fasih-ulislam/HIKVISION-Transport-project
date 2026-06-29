@@ -7,7 +7,16 @@
 // The decrypted password only exists in memory for the lifetime of this
 // function call — it's read from Mongo, decrypted, handed into the device
 // context, used, and then the context object falls out of scope.
+//
+// FILE OWNERSHIP: if the request carries an uploaded file (req.file), this
+// orchestrator is the sole owner of its lifecycle. Per-device controller
+// fns (register, update, etc.) only ever READ the file path — they must
+// never unlink it themselves, since the same file is shared read-only
+// across every device's in-flight call. Cleanup happens exactly once,
+// here, after every device has settled and right before we return the
+// aggregated response.
 
+const fs = require("fs");
 const HikDevice = require("../models/HikDevice");
 const { decryptPassword } = require("./crypto");
 
@@ -35,6 +44,24 @@ function buildDeviceContext(deviceDoc) {
 }
 
 /**
+ * Deletes the request's uploaded file, if any. Safe to call even when
+ * there's no file. Swallows ENOENT-type errors since cleanup failing
+ * should never affect the response we send back.
+ */
+function cleanupUploadedFile(req) {
+  const file = req.file;
+  if (!file) return;
+  fs.unlink(file.path, (err) => {
+    if (err) {
+      console.error(
+        `[orchestrator] failed to clean up uploaded file ${file.path}:`,
+        err.message,
+      );
+    }
+  });
+}
+
+/**
  * Runs `fn(deviceContext, req)` against every targeted device, fully isolated.
  *
  * @param {Function} fn - per-device controller fn, e.g. userController.register
@@ -47,6 +74,9 @@ async function runAcrossDevices(fn, req, options = {}) {
   const devices = await loadDevices(options.filter);
 
   if (devices.length === 0) {
+    // No devices to run against — still our job to clean up any upload,
+    // since the controller fn never got a chance to run at all.
+    cleanupUploadedFile(req);
     return {
       summary: { total: 0, succeeded: 0, failed: 0 },
       results: [],
@@ -74,6 +104,9 @@ async function runAcrossDevices(fn, req, options = {}) {
       }
 
       try {
+        // NOTE: fn must not delete req.file here — it's shared read-only
+        // across every device's concurrent call. Cleanup happens once,
+        // below, after all devices have settled.
         const result = await fn(deviceContext, req);
         return {
           ...base,
@@ -112,6 +145,11 @@ async function runAcrossDevices(fn, req, options = {}) {
 
   const succeeded = results.filter((r) => r.status === "success").length;
   const failed = results.length - succeeded;
+
+  // All devices have settled — every controller fn that needed the
+  // uploaded file has finished reading it. Safe to delete exactly once,
+  // right before we hand the response back.
+  cleanupUploadedFile(req);
 
   return {
     summary: { total: results.length, succeeded, failed },
