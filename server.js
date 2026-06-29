@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const debugRoutes = require("./routes/debugRoutes");
 const userRoutes = require("./routes/userRoutes");
+const deviceRoutes = require("./routes/deviceRoutes");
 const loggingRoutes = require("./routes/loggingRoutes");
 const logger = require("./middlewares/loggerMiddleware");
 const basicAuth = require("./middlewares/authMiddleware");
@@ -10,7 +11,7 @@ const connectDB = require("./config/db");
 const app = express();
 
 // Connect database (enable when logging)
-// connectDB();
+connectDB();
 
 // ***enable only when going to backup image upload path***
 //app.use("/uploads", express.static("uploads"));
@@ -29,6 +30,7 @@ app.get("/health-check", (req, res) => {
 // Protected Routes
 app.use("/students", userRoutes);
 app.use("/logs", loggingRoutes);
+app.use("/devices", deviceRoutes);
 
 // Debug Routes (enable when testing)
 // app.use("/debug", debugRoutes);

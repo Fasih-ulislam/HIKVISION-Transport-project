@@ -1,11 +1,16 @@
+// helperFunctions.js
+//
+// REFACTOR NOTE: this module no longer reads DEVICE_IP / DEVICE_USER / DEVICE_PASS
+// from process.env. Every function now takes a `device` context object:
+//   { ip, username, password }
+// where `password` is already-decrypted plaintext, handed in by the orchestrator.
+// This file has zero knowledge of encryption or Mongo — it only ever sees a
+// device's connection details for the duration of a single call.
+
 require("dotenv").config();
 const axios = require("axios");
 const fs = require("fs");
 const crypto = require("crypto");
-
-const DEVICE = `http://${process.env.DEVICE_IP}`;
-const USERNAME = process.env.DEVICE_USER;
-const PASSWORD = process.env.DEVICE_PASS;
 
 // ─── Digest Auth Helper ───────────────────────────────────
 function parseDigestHeader(header) {
@@ -18,14 +23,14 @@ function parseDigestHeader(header) {
   return params;
 }
 
-function buildDigestAuth(method, uri, digestParams) {
+function buildDigestAuth(method, uri, digestParams, username, password) {
   const { realm, nonce, qop, opaque } = digestParams;
   const nc = "00000001";
   const cnonce = crypto.randomBytes(8).toString("hex");
 
   const ha1 = crypto
     .createHash("md5")
-    .update(`${USERNAME}:${realm}:${PASSWORD}`)
+    .update(`${username}:${realm}:${password}`)
     .digest("hex");
   const ha2 = crypto.createHash("md5").update(`${method}:${uri}`).digest("hex");
   const response = crypto
@@ -33,10 +38,31 @@ function buildDigestAuth(method, uri, digestParams) {
     .update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
     .digest("hex");
 
-  return `Digest username="${USERNAME}", realm="${realm}", nonce="${nonce}", uri="${uri}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"${opaque ? `, opaque="${opaque}"` : ""}`;
+  return `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"${opaque ? `, opaque="${opaque}"` : ""}`;
 }
 
-async function hikRequest(method, endpoint, data = null) {
+/**
+ * Strips credentials out of an axios error before it's logged or returned.
+ * axios error objects embed the request config (headers, auth) — without this,
+ * a device password could end up in a log line or API response.
+ */
+function sanitizeAxiosError(err) {
+  if (err?.response?.data !== undefined) {
+    return err.response.data;
+  }
+  return err?.message || "Unknown error";
+}
+
+/**
+ * @param {object} device - { ip, username, password }
+ * @param {string} method
+ * @param {string} endpoint
+ * @param {object|null} data
+ */
+async function hikRequest(device, method, endpoint, data = null) {
+  const { ip, username, password } = device;
+  const DEVICE = `http://${ip}`;
+
   const separator = endpoint.includes("?") ? "&" : "?";
   const url = `${DEVICE}${endpoint}${separator}format=json`;
   const uri = new URL(url).pathname + new URL(url).search;
@@ -47,7 +73,7 @@ async function hikRequest(method, endpoint, data = null) {
       await axios({ method, url, data });
     } catch (err) {
       if (err.response?.status !== 401) {
-        return { success: false, error: err.response?.data || err.message };
+        return { success: false, error: sanitizeAxiosError(err) };
       }
 
       // Step 2: parse digest challenge
@@ -61,6 +87,8 @@ async function hikRequest(method, endpoint, data = null) {
         method.toUpperCase(),
         uri,
         digestParams,
+        username,
+        password,
       );
 
       // Step 3: retry with auth
@@ -78,23 +106,29 @@ async function hikRequest(method, endpoint, data = null) {
       } catch (retryErr) {
         return {
           success: false,
-          error: retryErr.response?.data || retryErr.message,
+          error: sanitizeAxiosError(retryErr),
         };
       }
     }
   } catch (err) {
-    return { success: false, error: err.response?.data || err.message };
+    return { success: false, error: sanitizeAxiosError(err) };
   }
 }
 
-// direct face upload helper
-async function uploadFaceDirect(employeeNo, imagePath, update = false) {
-  const endpoint = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
+/**
+ * @param {object} device - { ip, username, password }
+ * @param {string} employeeNo
+ * @param {string} imagePath
+ * @param {boolean} update
+ */
+async function uploadFaceDirect(device, employeeNo, imagePath, update = false) {
+  const { ip } = device;
+  const DEVICE = `http://${ip}`;
 
+  const endpoint = "/ISAPI/Intelligent/FDLib/FaceDataRecord?format=json";
   const url = `${DEVICE}${endpoint}`;
 
   const boundary = "---------------" + Date.now().toString(16);
-
   const imageBuffer = fs.readFileSync(imagePath);
 
   const jsonPayload = JSON.stringify({
@@ -140,7 +174,7 @@ async function uploadFaceDirect(employeeNo, imagePath, update = false) {
       if (err.response?.status !== 401) {
         return {
           success: false,
-          error: err.response?.data || err.message,
+          error: sanitizeAxiosError(err),
         };
       }
 
@@ -158,10 +192,14 @@ async function uploadFaceDirect(employeeNo, imagePath, update = false) {
     // STEP 2: Build Digest Auth
     //
     const digestParams = parseDigestHeader(digestHeader);
-
     const uri = new URL(url).pathname + new URL(url).search;
-
-    const authValue = buildDigestAuth("POST", uri, digestParams);
+    const authValue = buildDigestAuth(
+      "POST",
+      uri,
+      digestParams,
+      device.username,
+      device.password,
+    );
 
     //
     // STEP 3: Authenticated Upload
@@ -185,17 +223,22 @@ async function uploadFaceDirect(employeeNo, imagePath, update = false) {
   } catch (err) {
     let result = null;
     if (!update) {
-      result = await hikRequest("PUT", "/ISAPI/AccessControl/UserInfo/Delete", {
-        UserInfoDelCond: {
-          EmployeeNoList: [{ employeeNo }],
+      result = await hikRequest(
+        device,
+        "PUT",
+        "/ISAPI/AccessControl/UserInfo/Delete",
+        {
+          UserInfoDelCond: {
+            EmployeeNoList: [{ employeeNo }],
+          },
         },
-      });
+      );
     }
     return {
       success: false,
       studentRemoved: result?.success || false,
       status: err.response?.status,
-      error: err.response?.data || err.message,
+      error: sanitizeAxiosError(err),
     };
   }
 }
@@ -214,8 +257,13 @@ const validateTime = (value, fieldName) => {
 };
 
 // ─── Delete existing face from device ────────────────────────────────────────
-async function deleteFace(employeeNo) {
+/**
+ * @param {object} device - { ip, username, password }
+ * @param {string} employeeNo
+ */
+async function deleteFace(device, employeeNo) {
   return await hikRequest(
+    device,
     "PUT",
     "/ISAPI/Intelligent/FDLib/FDSetUp?format=json",
     {

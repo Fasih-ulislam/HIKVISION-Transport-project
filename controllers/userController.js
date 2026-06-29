@@ -1,3 +1,12 @@
+// controllers/userController.js
+//
+// REFACTOR NOTE: these functions are no longer Express (req, res) handlers.
+// Each one now takes (device, req) and returns a plain result object:
+//   { success: true/false, ...data }
+// The orchestrator is responsible for calling these once per device (via
+// Promise.allSettled) and for writing the aggregated response to `res`.
+// Nothing in this file writes to `res` or knows that other devices exist.
+
 const path = require("path");
 const fs = require("fs");
 require("dotenv").config();
@@ -8,12 +17,18 @@ const {
   deleteFace,
 } = require("../utils/helperFuntions");
 
-module.exports.register = async (req, res) => {
+/**
+ * @param {object} device - { ip, username, password, deviceId? }
+ * @param {object} req - the original Express req (file, body, params, query)
+ * @returns {Promise<object>} result object, never writes to res
+ */
+module.exports.register = async (device, req) => {
   const file = req.file;
   try {
     const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
     const addUser = await hikRequest(
+      device,
       "POST",
       "/ISAPI/AccessControl/UserInfo/Record",
       {
@@ -38,29 +53,36 @@ module.exports.register = async (req, res) => {
     );
 
     if (!addUser.success) {
-      return res.status(500).json(addUser);
+      return { success: false, status: 500, ...addUser };
     }
 
-    const faceResult = await uploadFaceDirect(employeeNo, file.path);
-    return res.json(faceResult);
+    const faceResult = await uploadFaceDirect(device, employeeNo, file.path);
+    return { status: faceResult.success ? 200 : 500, ...faceResult };
   } finally {
     if (file) fs.unlink(file.path, () => {});
   }
 };
 
 // Register Backup (uses URL for images rather than direct upload)
-module.exports.registerBackup = async (req, res) => {
+/**
+ * @param {object} device - { ip, username, password, deviceId? }
+ * @param {object} req
+ */
+module.exports.registerBackup = async (device, req) => {
   const { employeeNo, name } = req.body;
   const file = req.file;
 
   if (!employeeNo || !name || !file) {
-    return res
-      .status(400)
-      .json({ error: "employeeNo, name and faceImage are required" });
+    return {
+      success: false,
+      status: 400,
+      error: "employeeNo, name and faceImage are required",
+    };
   }
 
   // Step A: Create user
   const addUser = await hikRequest(
+    device,
     "POST",
     "/ISAPI/AccessControl/UserInfo/Record",
     {
@@ -81,15 +103,19 @@ module.exports.registerBackup = async (req, res) => {
 
   if (!addUser.success) {
     fs.unlink(file.path, () => {});
-    return res
-      .status(500)
-      .json({ error: "Failed to add user", detail: addUser.error });
+    return {
+      success: false,
+      status: 500,
+      error: "Failed to add user",
+      detail: addUser.error,
+    };
   }
 
   // Step B: Upload face — device fetches it from our server by URL
   const faceURL = `http://${process.env.SERVER_IP}:${process.env.PORT || 3000}/uploads/${file.filename}`;
 
   const addFace = await hikRequest(
+    device,
     "POST",
     "/ISAPI/Intelligent/FDLib/FaceDataRecord",
     {
@@ -103,22 +129,31 @@ module.exports.registerBackup = async (req, res) => {
   fs.unlink(file.path, () => {}); // cleanup regardless of result
 
   if (!addFace.success) {
-    return res.status(500).json({
+    return {
+      success: false,
+      status: 500,
       error: "User added but face upload failed",
       detail: addFace.error,
-    });
+    };
   }
 
-  return res.json({
+  return {
     success: true,
+    status: 200,
     message: `Student ${name} registered successfully`,
-  });
+  };
 };
-module.exports.deleteStudent = async (req, res) => {
+
+/**
+ * @param {object} device
+ * @param {object} req
+ */
+module.exports.deleteStudent = async (device, req) => {
   const { employeeNo } = req.params;
 
   // Fetch current user info first to fill in unchanged fields
   const currentUser = await hikRequest(
+    device,
     "POST",
     "/ISAPI/AccessControl/UserInfo/Search?format=json",
     {
@@ -135,10 +170,11 @@ module.exports.deleteStudent = async (req, res) => {
     !currentUser.success ||
     !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
   ) {
-    return res.status(404).json({ error: "User not found on device" });
+    return { success: false, status: 404, error: "User not found on device" };
   }
 
   const result = await hikRequest(
+    device,
     "PUT",
     "/ISAPI/AccessControl/UserInfo/Delete",
     {
@@ -149,23 +185,32 @@ module.exports.deleteStudent = async (req, res) => {
   );
 
   if (!result.success) {
-    return res
-      .status(500)
-      .json({ error: "Failed to delete user", detail: result.error });
+    return {
+      success: false,
+      status: 500,
+      error: "Failed to delete user",
+      detail: result.error,
+    };
   }
 
-  return res.json({ success: true, message: `Student ${employeeNo} removed` });
+  return {
+    success: true,
+    status: 200,
+    message: `Student ${employeeNo} removed`,
+  };
 };
 
-//get Students
-module.exports.getStudents = async (req, res) => {
+/**
+ * @param {object} device
+ * @param {object} req
+ */
+module.exports.getStudents = async (device, req) => {
   const searchID = "1";
-
   const position = Number(req.query.position || 0);
-
   const limit = Number(req.query.limit || 30);
 
   const result = await hikRequest(
+    device,
     "POST",
     "/ISAPI/AccessControl/UserInfo/Search",
     {
@@ -178,33 +223,38 @@ module.exports.getStudents = async (req, res) => {
   );
 
   if (!result.success) {
-    return res.status(500).json({
+    return {
+      success: false,
+      status: 500,
       error: "Failed to fetch users",
       detail: result.error,
-    });
+    };
   }
 
-  return res.json({
+  return {
     success: true,
+    status: 200,
     searchID,
     position,
     limit,
     data: result.data,
-  });
+  };
 };
 
-// Update Student
-module.exports.update = async (req, res) => {
+/**
+ * @param {object} device
+ * @param {object} req
+ */
+module.exports.update = async (device, req) => {
   const file = req.file;
   try {
     const { employeeNo } = req.params;
-
     const { userType, beginTime, endTime, name } = req.body || {};
 
     // ─── Update user info (only if any of these fields are passed) ──────────────
     if (userType || beginTime || endTime || name) {
-      // Fetch current user info first to fill in unchanged fields
       const currentUser = await hikRequest(
+        device,
         "POST",
         "/ISAPI/AccessControl/UserInfo/Search?format=json",
         {
@@ -221,12 +271,17 @@ module.exports.update = async (req, res) => {
         !currentUser.success ||
         !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
       ) {
-        return res.status(404).json({ error: "User not found on device" });
+        return {
+          success: false,
+          status: 404,
+          error: "User not found on device",
+        };
       }
 
       const existing = currentUser.data.UserInfoSearch.UserInfo[0];
 
       const updateResult = await hikRequest(
+        device,
         "PUT",
         "/ISAPI/AccessControl/UserInfo/Modify?format=json",
         {
@@ -245,7 +300,7 @@ module.exports.update = async (req, res) => {
       );
 
       if (!updateResult.success) {
-        return res.status(500).json(updateResult);
+        return { success: false, status: 500, ...updateResult };
       }
     }
 
@@ -258,32 +313,44 @@ module.exports.update = async (req, res) => {
         !allowedMimeTypes.includes(file.mimetype) ||
         file.size > maxSizeBytes
       ) {
-        return res
-          .status(400)
-          .json({ error: "Image must be a JPEG/JPG and less than 200 KB" });
+        return {
+          success: false,
+          status: 400,
+          error: "Image must be a JPEG/JPG and less than 200 KB",
+        };
       }
 
-      const deleted = await deleteFace(employeeNo);
+      const deleted = await deleteFace(device, employeeNo);
       if (!deleted.success) {
         console.log(deleted);
       }
 
-      const faceResult = await uploadFaceDirect(employeeNo, file.path, true);
+      const faceResult = await uploadFaceDirect(
+        device,
+        employeeNo,
+        file.path,
+        true,
+      );
 
       if (!faceResult.success) {
-        return res.status(500).json(faceResult);
+        return { success: false, status: 500, ...faceResult };
       }
     }
 
-    return res.json({ success: true, message: "User updated successfully" });
+    return { success: true, status: 200, message: "User updated successfully" };
   } finally {
     if (file) fs.unlink(file.path, () => {});
   }
 };
 
-module.exports.getStudent = async (req, res) => {
+/**
+ * @param {object} device
+ * @param {object} req
+ */
+module.exports.getStudent = async (device, req) => {
   const { employeeNo } = req.params;
   const result = await hikRequest(
+    device,
     "POST",
     "/ISAPI/AccessControl/UserInfo/Search?format=json",
     {
@@ -295,5 +362,5 @@ module.exports.getStudent = async (req, res) => {
       },
     },
   );
-  return res.json(result);
+  return result;
 };
