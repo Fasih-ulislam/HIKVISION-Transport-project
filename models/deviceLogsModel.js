@@ -3,6 +3,11 @@ const mongoose = require("mongoose");
 
 const deviceLogSchema = new mongoose.Schema(
   {
+    deviceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "HikDevice",
+      required: true,
+    },
     major: { type: Number, required: true },
     minor: { type: Number, required: true },
     eventType: { type: String },
@@ -27,7 +32,12 @@ const deviceLogSchema = new mongoose.Schema(
   },
 );
 
-// Prevent duplicate events using device's own serialNo
-deviceLogSchema.index({ serialNo: 1 }, { unique: true });
+// Prevent duplicate events using each device's own serialNo.
+// IMPORTANT: serialNo is only unique *within* a device's own event
+// counter — different devices can and will produce the same serialNo.
+// The index must be compound (deviceId + serialNo), never serialNo alone,
+// or events from a second device will collide with and silently
+// overwrite/skip events from the first.
+deviceLogSchema.index({ deviceId: 1, serialNo: 1 }, { unique: true });
 
 module.exports = mongoose.model("DeviceLog", deviceLogSchema);
