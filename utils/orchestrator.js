@@ -68,10 +68,19 @@ function cleanupUploadedFile(req) {
  * @param {object} req - the original Express req, passed through unchanged
  * @param {object} [options]
  * @param {object} [options.filter] - Mongo filter to select devices (default: active only)
+ * @param {Function} [options.onDeviceSettled] - optional (deviceDoc, result) => void|Promise<void>,
+ *   called once per device immediately after that device's call settles (success or failure),
+ *   before the next device's callback runs is NOT guaranteed — callbacks across devices may
+ *   interleave/run concurrently, same as the underlying Promise.allSettled. Used by callers
+ *   that need a side effect per device (e.g. writing sync-state records) without the
+ *   orchestrator itself knowing anything about what that side effect is. Errors thrown from
+ *   this callback are caught and logged, never allowed to affect that device's recorded
+ *   result or any other device.
  * @returns {Promise<{ summary: object, results: Array }>}
  */
 async function runAcrossDevices(fn, req, options = {}) {
   const devices = await loadDevices(options.filter);
+  const onDeviceSettled = options.onDeviceSettled;
 
   if (devices.length === 0) {
     // No devices to run against — still our job to clean up any upload,
@@ -92,38 +101,62 @@ async function runAcrossDevices(fn, req, options = {}) {
       };
 
       let deviceContext;
+      let outcome;
+
       try {
         deviceContext = buildDeviceContext(deviceDoc);
       } catch (err) {
         // Decryption failure for one device must not abort the others.
-        return {
+        outcome = {
           ...base,
           status: "failed",
           error: "Failed to decrypt stored credentials",
         };
       }
 
-      try {
-        // NOTE: fn must not delete req.file here — it's shared read-only
-        // across every device's concurrent call. Cleanup happens once,
-        // below, after all devices have settled.
-        const result = await fn(deviceContext, req);
-        return {
-          ...base,
-          status: result?.success ? "success" : "failed",
-          data: result?.success ? result : undefined,
-          error: result?.success ? undefined : describeError(result),
-        };
-      } catch (err) {
-        // Any unexpected throw inside the per-device flow lands here,
-        // scoped to this device only — Promise.allSettled means it never
-        // propagates and aborts the other devices' promises.
-        return {
-          ...base,
-          status: "failed",
-          error: err?.message || "Unexpected error",
-        };
+      if (!outcome) {
+        try {
+          // NOTE: fn must not delete req.file here — it's shared read-only
+          // across every device's concurrent call. Cleanup happens once,
+          // below, after all devices have settled.
+          const result = await fn(deviceContext, req);
+          outcome = {
+            ...base,
+            status: result?.success ? "success" : "failed",
+            data: result?.success ? result : undefined,
+            error: result?.success ? undefined : describeError(result),
+            // Raw controller result preserved for onDeviceSettled callers
+            // that need finer detail than the summarized outcome above
+            // (e.g. which part of a combined profile+image update failed).
+            raw: result,
+          };
+        } catch (err) {
+          // Any unexpected throw inside the per-device flow lands here,
+          // scoped to this device only — Promise.allSettled means it never
+          // propagates and aborts the other devices' promises.
+          outcome = {
+            ...base,
+            status: "failed",
+            error: err?.message || "Unexpected error",
+          };
+        }
       }
+
+      if (onDeviceSettled) {
+        try {
+          await onDeviceSettled(deviceDoc, outcome);
+        } catch (callbackErr) {
+          // A failure recording sync state must never look like a failure
+          // of the underlying device operation, and must never affect
+          // any other device's callback.
+          console.error(
+            `[orchestrator] onDeviceSettled callback failed for device ${base.deviceId}:`,
+            callbackErr.message,
+          );
+        }
+      }
+
+      return outcome;
     }),
   );
 

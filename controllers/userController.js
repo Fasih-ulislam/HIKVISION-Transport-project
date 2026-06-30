@@ -31,6 +31,7 @@ const {
 module.exports.register = async (device, req) => {
   const file = req.file;
   const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
+  const parts = {};
 
   const addUser = await hikRequest(
     device,
@@ -58,11 +59,22 @@ module.exports.register = async (device, req) => {
   );
 
   if (!addUser.success) {
-    return { success: false, status: 500, ...addUser };
+    parts.profile = {
+      success: false,
+      error: addUser.error || "Failed to add user",
+    };
+    return { success: false, status: 500, ...addUser, parts };
   }
+  parts.profile = { success: true };
 
   const faceResult = await uploadFaceDirect(device, employeeNo, file.path);
-  return { status: faceResult.success ? 200 : 500, ...faceResult };
+  parts.image = {
+    success: !!faceResult.success,
+    error: faceResult.success
+      ? undefined
+      : faceResult.error || "Failed to upload image",
+  };
+  return { status: faceResult.success ? 200 : 500, ...faceResult, parts };
 };
 
 // Register Backup (uses URL for images rather than direct upload)
@@ -249,6 +261,15 @@ module.exports.update = async (device, req) => {
   const { employeeNo } = req.params;
   const { userType, beginTime, endTime, name } = req.body || {};
 
+  // Tracks which parts were attempted and how each fared, so callers
+  // (the sync-tracking service layer) can record profile and image
+  // outcomes independently rather than treating "update" as one
+  // all-or-nothing unit. A part that was never attempted (e.g. no
+  // fields passed, no file passed) is omitted entirely rather than
+  // marked success or failure — "not attempted" is a third state the
+  // caller must be able to distinguish from "attempted and succeeded."
+  const parts = {};
+
   // ─── Update user info (only if any of these fields are passed) ──────────────
   if (userType || beginTime || endTime || name) {
     const currentUser = await hikRequest(
@@ -269,10 +290,12 @@ module.exports.update = async (device, req) => {
       !currentUser.success ||
       !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
     ) {
+      parts.profile = { success: false, error: "User not found on device" };
       return {
         success: false,
         status: 404,
         error: "User not found on device",
+        parts,
       };
     }
 
@@ -298,8 +321,14 @@ module.exports.update = async (device, req) => {
     );
 
     if (!updateResult.success) {
-      return { success: false, status: 500, ...updateResult };
+      parts.profile = {
+        success: false,
+        error: updateResult.error || "Failed to update profile",
+      };
+      return { success: false, status: 500, ...updateResult, parts };
     }
+
+    parts.profile = { success: true };
   }
 
   // ─── Update face image (only if file was passed) ─────────────────────────────
@@ -308,10 +337,15 @@ module.exports.update = async (device, req) => {
     const maxSizeBytes = 200 * 1024;
 
     if (!allowedMimeTypes.includes(file.mimetype) || file.size > maxSizeBytes) {
+      parts.image = {
+        success: false,
+        error: "Image must be a JPEG/JPG and less than 200 KB",
+      };
       return {
         success: false,
         status: 400,
         error: "Image must be a JPEG/JPG and less than 200 KB",
+        parts,
       };
     }
 
@@ -328,11 +362,22 @@ module.exports.update = async (device, req) => {
     );
 
     if (!faceResult.success) {
-      return { success: false, status: 500, ...faceResult };
+      parts.image = {
+        success: false,
+        error: faceResult.error || "Failed to upload image",
+      };
+      return { success: false, status: 500, ...faceResult, parts };
     }
+
+    parts.image = { success: true };
   }
 
-  return { success: true, status: 200, message: "User updated successfully" };
+  return {
+    success: true,
+    status: 200,
+    message: "User updated successfully",
+    parts,
+  };
 };
 
 /**
