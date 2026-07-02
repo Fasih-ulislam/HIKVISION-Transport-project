@@ -49,10 +49,12 @@ function viaService(serviceFn) {
       const result = await serviceFn(req);
       return res.json(result);
     } catch (err) {
+      // orchestrator never ran, so clean up any uploaded file ourselves
+      if (req.file?.path) {
+        fs.unlink(req.file.path, () => {});
+      }
       const status = err.status || 500;
-      return res
-        .status(status)
-        .json({ error: err.message || "Unexpected error" });
+      return res.status(status).json({ error: err.message });
     }
   };
 }

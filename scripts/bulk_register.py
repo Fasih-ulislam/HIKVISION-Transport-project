@@ -133,10 +133,10 @@ def main():
                 print(f"\n[LIMIT] Reached {MAX_ROWS} row limit — stopping")
                 break
 
-            rollno  = (row.get("ID") or "").strip()
-            name    = (row.get("NAME") or "").strip()
-            userType = (row.get("USERTYPE") or "").strip()
-            image   = (row.get("BLOB_TO_BASE64") or "").strip().replace("\n", "").replace("\r", "")
+            rollno  = (row.get("ROLLNO") or "").strip()
+            name    = (row.get("STD_NAME") or "").strip()
+            userType = (row.get("USERTYPE") or "").strip() or "normal"
+            image   = (row.get("BASE64") or "").strip().replace("\n", "").replace("\r", "")
 
             if rollno in already_processed_ids:
                 print(f"[SKIP] {rollno} — already processed")
