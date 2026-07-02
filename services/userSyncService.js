@@ -34,19 +34,20 @@ const {
 } = require("../utils/syncState");
 
 /**
- * Registers a new user: creates the User doc (version 1/1), pre-creates
- * a `pending` DeviceUserSync row for every currently-active device (so
- * the table never has a "user exists, zero sync rows" gap while fan-out
- * is in flight), pushes to every active device, and records each
- * device's outcome.
+ * Registers a new user — or reactivates a previously soft-deleted one
+ * with the same employeeNo (handles the "student leaves, new student
+ * gets same ID" case without blocking re-registration).
  *
- * ROLLBACK: if every targeted device fails, the User doc is deleted
- * (along with the pending sync rows) rather than left behind as an
- * orphaned record nothing ever retries. A registration that succeeded
- * on at least one device is considered real and is kept regardless of
- * how many other devices failed — those are tracked as ordinary
- * catch-up candidates (syncedVersion behind user.version), same as any
- * device that misses a later update.
+ * Flow:
+ *   1. Check for an existing inactive User with this employeeNo.
+ *      - Found → reactivate in place, bump both versions.
+ *      - Not found → create fresh at version 1/1.
+ *   2. Pre-create pending DeviceUserSync rows for all active devices.
+ *   3. Fan out to every active device via orchestrator.
+ *   4. Record each device's outcome.
+ *   5. ROLLBACK if every device failed:
+ *      - Reactivation path → flip back to inactive (preserves history).
+ *      - Fresh create path → hard delete (no history worth keeping).
  *
  * @param {object} req - the original Express req (body, file)
  * @returns {Promise<{ user: object|null, summary: object, results: Array, rolledBack: boolean }>}
@@ -54,21 +55,46 @@ const {
 async function registerUser(req) {
   const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
-  const user = await User.create({
+  // Check for a previously soft-deleted record with the same employeeNo.
+  // A live (status: "active") duplicate is a real conflict and should
+  // fall through to User.create() so the unique-index error surfaces
+  // naturally as a 500 — callers should deduplicate before registering.
+  const existingInactive = await User.findOne({
     employeeNo,
-    name,
-    userType: userType || "normal",
-    beginTime: beginTime || null,
-    endTime: endTime || null,
-    profileVersion: 1,
-    imageVersion: 1,
+    status: "inactive",
   });
 
+  const wasReactivated = !!existingInactive;
+  let user;
+
+  if (wasReactivated) {
+    // Reactivate in place — bump both versions so any stale sync rows
+    // from the previous person's registration are clearly behind and
+    // won't be mistaken for a valid sync state for the new person.
+    existingInactive.name = name;
+    existingInactive.userType = userType || "normal";
+    existingInactive.beginTime = beginTime || null;
+    existingInactive.endTime = endTime || null;
+    existingInactive.profileVersion += 1;
+    existingInactive.imageVersion += 1;
+    existingInactive.status = "active";
+    user = await existingInactive.save();
+  } else {
+    user = await User.create({
+      employeeNo,
+      name,
+      userType: userType || "normal",
+      beginTime: beginTime || null,
+      endTime: endTime || null,
+      profileVersion: 1,
+      imageVersion: 1,
+    });
+  }
+
   // Pre-create pending rows for every active device targeted by this
-  // request, BEFORE fan-out starts. This is what closes the window
-  // where a query for this user's sync status would otherwise see
-  // zero rows and be unable to distinguish "registration in flight"
-  // from "user has no devices."
+  // request, BEFORE fan-out starts. This closes the window where a
+  // query for this user's sync status would see zero rows and be unable
+  // to distinguish "registration in flight" from "user has no devices."
   const activeDevices = await HikDevice.find({ status: "active" }).lean();
   if (activeDevices.length > 0) {
     await DeviceUserSync.insertMany(
@@ -96,12 +122,19 @@ async function registerUser(req) {
 
   if (summary.total > 0 && summary.succeeded === 0) {
     // Every device failed — this user never actually took effect
-    // anywhere. Roll back rather than leave a permanently-stuck record;
-    // the caller can retry registration from scratch.
-    await Promise.all([
-      User.deleteOne({ _id: user._id }),
-      DeviceUserSync.deleteMany({ userId: user._id }),
-    ]);
+    // anywhere. Roll back to avoid leaving a permanently-stuck record.
+    await DeviceUserSync.deleteMany({ userId: user._id });
+
+    if (wasReactivated) {
+      // Preserve history — just flip back to inactive rather than
+      // hard-deleting. The previous person's audit trail stays intact.
+      user.status = "inactive";
+      await user.save();
+    } else {
+      // Fresh create with no history worth keeping — hard delete.
+      await User.deleteOne({ _id: user._id });
+    }
+
     return { user: null, summary, results, rolledBack: true };
   }
 
@@ -122,7 +155,7 @@ async function updateUser(req) {
   const hasProfileChange = !!(userType || beginTime || endTime || name);
   const hasImageChange = !!req.file;
 
-  const user = await User.findOne({ employeeNo });
+  const user = await User.findOne({ employeeNo, status: "active" });
   if (!user) {
     const err = new Error("User not found");
     err.status = 404;
@@ -181,7 +214,7 @@ async function updateUser(req) {
 async function deleteUser(req) {
   const { employeeNo } = req.params;
 
-  const user = await User.findOne({ employeeNo });
+  const user = await User.findOne({ employeeNo, status: "active" });
   if (!user) {
     const err = new Error("User not found");
     err.status = 404;
