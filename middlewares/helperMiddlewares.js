@@ -264,43 +264,41 @@ module.exports.decodeBase64Image = async (req, res, next) => {
     }
 
     const inputBuffer = Buffer.from(base64Data, "base64");
+    const sharpOpts = { failOn: "none" }; // tolerate non-conformant-but-decodable JPEGs (e.g. invalid SOS)
 
-    const metadata = await sharp(inputBuffer).metadata();
+    const metadata = await sharp(inputBuffer, sharpOpts).metadata();
     if (!metadata.format) {
       return res.status(400).json({ error: "Could not decode image" });
     }
 
     const targetSizeBytes = 200 * 1024;
-    const UPSCALE_FLOOR = 800; // below this width, source is likely too small for reliable modeling
-    const QUALITY_FLOOR = 65; // don't route through this normally - 40 was your bug
+    const UPSCALE_FLOOR = 800;
+    const QUALITY_FLOOR = 65;
 
-    // Step 1: normalize orientation once, then upscale if the source is small.
-    // lanczos3 is sharp's sharpest interpolation kernel - matters a lot when upscaling faces.
     let workingBuffer;
     if (metadata.width < UPSCALE_FLOOR) {
-      workingBuffer = await sharp(inputBuffer)
+      workingBuffer = await sharp(inputBuffer, sharpOpts)
         .rotate()
         .resize({
           width: UPSCALE_FLOOR,
           kernel: "lanczos3",
           withoutEnlargement: false,
         })
-        .sharpen({ sigma: 1.2 }) // counters blur introduced by upscaling
-        .normalise() // cheap local contrast stretch for flat/low-contrast sources
+        .sharpen({ sigma: 1.2 })
+        .normalise()
         .toBuffer();
     } else {
-      workingBuffer = await sharp(inputBuffer).rotate().toBuffer();
+      workingBuffer = await sharp(inputBuffer, sharpOpts).rotate().toBuffer();
     }
 
-    const workingMeta = await sharp(workingBuffer).metadata();
+    const workingMeta = await sharp(workingBuffer, sharpOpts).metadata();
 
-    // Step 2: compress down to fit size limit, but never below QUALITY_FLOOR in this pass.
     let outputBuffer;
     const widthSteps = [1200, 1000, 800, 600];
     outer: for (const width of widthSteps) {
       if (width >= workingMeta.width) continue;
       for (let quality = 85; quality >= QUALITY_FLOOR; quality -= 10) {
-        outputBuffer = await sharp(workingBuffer)
+        outputBuffer = await sharp(workingBuffer, sharpOpts)
           .resize({ width, withoutEnlargement: true })
           .jpeg({ quality })
           .toBuffer();
@@ -308,10 +306,8 @@ module.exports.decodeBase64Image = async (req, res, next) => {
       }
     }
 
-    // Step 3: image was already <= 800 wide (no downsizing needed) or nothing hit target yet -
-    // compress the working (already upscaled/sharpened) buffer at the quality floor.
     if (!outputBuffer || outputBuffer.length > targetSizeBytes) {
-      outputBuffer = await sharp(workingBuffer)
+      outputBuffer = await sharp(workingBuffer, sharpOpts)
         .resize({
           width: Math.min(workingMeta.width, 800),
           withoutEnlargement: true,
@@ -320,10 +316,8 @@ module.exports.decodeBase64Image = async (req, res, next) => {
         .toBuffer();
     }
 
-    // Step 4: true last resort - only reached if step 3 still exceeds the hard 200KB device limit.
-    // Rare in practice once step 1 is upscaling small sources properly.
     if (outputBuffer.length > targetSizeBytes) {
-      outputBuffer = await sharp(workingBuffer)
+      outputBuffer = await sharp(workingBuffer, sharpOpts)
         .resize({ width: 500, withoutEnlargement: true })
         .jpeg({ quality: 50 })
         .toBuffer();
@@ -342,6 +336,8 @@ module.exports.decodeBase64Image = async (req, res, next) => {
 
     next();
   } catch (err) {
+    console.log(err);
+
     return res
       .status(400)
       .json({ error: "Failed to process image", detail: err.message });
