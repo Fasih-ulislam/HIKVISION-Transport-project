@@ -41,7 +41,7 @@ const attemptSchema = new mongoose.Schema(
     kind: { type: String, enum: ["profile", "image"], required: true },
     version: { type: Number, required: true },
     status: { type: String, enum: ["success", "failed"], required: true },
-    error: { type: String, default: null },
+    error: { type: mongoose.Schema.Types.Mixed, default: null },
     attemptedAt: { type: Date, required: true, default: Date.now },
   },
   { _id: false },
