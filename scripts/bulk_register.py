@@ -9,10 +9,10 @@ csv.field_size_limit(sys.maxsize)  # remove the field size cap
 
 # ─── Config ───────────────────────────────────────────────
 API_URL = "http://192.168.12.128:3000/students/register"
-INPUT_FILE = "data/students.csv"
+INPUT_FILE = "data/Faculty.csv"
 SUCCESS_FILE = "data/success.csv"
 FAILED_FILE = "data/failed.csv"
-DELAY_BETWEEN_REQUESTS = 0.2  # seconds — increase if device gets overwhelmed
+DELAY_BETWEEN_REQUESTS = 0.1  # seconds — increase if device gets overwhelmed
 REQUEST_TIMEOUT = 30        # seconds per request
 MAX_ROWS = None  # set to None to process all rows
 
@@ -133,10 +133,10 @@ def main():
                 print(f"\n[LIMIT] Reached {MAX_ROWS} row limit — stopping")
                 break
 
-            rollno  = (row.get("ROLLNO") or "").strip()
-            name    = (row.get("STD_NAME") or "").strip()
+            rollno  = (row.get("ID") or "").strip()
+            name    = (row.get("NAME") or "").strip()
             userType = (row.get("USERTYPE") or "").strip() or "normal"
-            image   = (row.get("BASE64") or "").strip().replace("\n", "").replace("\r", "")
+            image   = (row.get("BLOB_TO_BASE64") or "").strip().replace("\n", "").replace("\r", "")
 
             if rollno in already_processed_ids:
                 print(f"[SKIP] {rollno} — already processed")

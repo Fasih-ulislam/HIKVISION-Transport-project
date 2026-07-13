@@ -96,7 +96,7 @@ async function recordProfileAttempt(
 
   await DeviceUserSync.findOneAndUpdate({ userId, deviceId }, update, {
     upsert: true,
-    new: true,
+    returnDocument: "after",
   });
 }
 
@@ -141,7 +141,7 @@ async function recordImageAttempt(
 
   await DeviceUserSync.findOneAndUpdate({ userId, deviceId }, update, {
     upsert: true,
-    new: true,
+    returnDocument: "after",
   });
 }
 
