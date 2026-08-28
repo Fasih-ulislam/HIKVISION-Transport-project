@@ -40,16 +40,12 @@ const userSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      // pending_registration never grants access until at least one device
-      // confirms both profile and face. pending_review requires an operator
-      // to re-submit a corrected registration. deleting only retries removal.
-      enum: ["pending_registration", "pending_review", "active", "deleting", "inactive"],
-      default: "pending_registration",
+      // A user is active as soon as it exists in our database. Per-device
+      // DeviceUserSync rows track any outstanding registration retries.
+      // Deleting prevents catch-up; inactive means deletion completed.
+      enum: ["active", "deleting", "inactive"],
+      default: "active",
     },
-
-    registrationRetryCount: { type: Number, required: true, default: 0 },
-    registrationLastAttemptAt: { type: Date, default: null },
-    registrationLastError: { type: String, default: null },
     deletionRequestedAt: { type: Date, default: null },
   },
   { timestamps: true },

@@ -3,7 +3,6 @@ const cron = require("node-cron");
 const HikDevice = require("../models/HikDevice");
 const {
   catchUpDevice,
-  finalizePendingRegistrations,
   retryPendingDeletions,
 } = require("./userSyncService");
 
@@ -26,11 +25,8 @@ async function runSyncRetry() {
         return { deviceId: String(device._id), error: err.message };
       }
     }));
-    const registrationResults = devices.length > 0
-      ? await finalizePendingRegistrations()
-      : [];
     console.log(`[sync-retry] completed for ${devices.length} active device(s)`);
-    return { skipped: false, results, deletionResults, registrationResults };
+    return { skipped: false, results, deletionResults };
   } finally {
     retryRunInProgress = false;
   }

@@ -5,3 +5,4 @@ scripts/__pycache__/
 scripts/data/*
 !scripts/data/.gitkeep    # keep the folder, ignore everything inside it
 storage/
+UIS API docs

@@ -40,14 +40,8 @@ const {
   recordDeletionAttempt,
 } = require("../utils/syncState");
 
-const configuredRegistrationRetries = Number(process.env.REGISTRATION_MAX_RETRIES || 3);
-const MAX_REGISTRATION_RETRIES =
-  Number.isInteger(configuredRegistrationRetries) && configuredRegistrationRetries > 0
-    ? configuredRegistrationRetries
-    : 3;
-
 /**
- * Registers a new user — or reactivates a previously soft-deleted one
+ * Registers a new active user — or reactivates a previously soft-deleted one
  * with the same employeeNo (handles the "student leaves, new student
  * gets same ID" case without blocking re-registration).
  *
@@ -58,8 +52,8 @@ const MAX_REGISTRATION_RETRIES =
  *   2. Pre-create pending DeviceUserSync rows for all active devices.
  *   3. Fan out to every active device via orchestrator.
  *   4. Record each device's outcome.
- *   5. Keep the user and its durable image even if every device fails;
- *      the scheduled retry service will catch it up later.
+ *   5. Keep the user active even if every device fails; the scheduled
+ *      per-device catch-up service will retry every device still behind.
  *
  * @param {object} req - the original Express req (body, file)
  * @returns {Promise<{ user: object, summary: object, results: Array, queuedForRetry: boolean }>}
@@ -67,11 +61,11 @@ const MAX_REGISTRATION_RETRIES =
 async function registerUser(req) {
   const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
-  // A rejected or previously deleted registration may be submitted again
-  // with a corrected image. A live active/deleting user remains a conflict.
+  // A previously deleted registration may be submitted again with a corrected
+  // image. A live active/deleting user remains a conflict.
   const existingInactive = await User.findOne({
     employeeNo,
-    status: { $in: ["inactive", "pending_registration", "pending_review"] },
+    status: "inactive",
   });
 
   const wasReactivated = !!existingInactive;
@@ -87,10 +81,7 @@ async function registerUser(req) {
     existingInactive.endTime = endTime || null;
     existingInactive.profileVersion += 1;
     existingInactive.imageVersion += 1;
-    existingInactive.status = "pending_registration";
-    existingInactive.registrationRetryCount = 0;
-    existingInactive.registrationLastAttemptAt = new Date();
-    existingInactive.registrationLastError = null;
+    existingInactive.status = "active";
     existingInactive.faceImagePath = await persistFaceImage(
       req.file,
       existingInactive._id,
@@ -111,8 +102,7 @@ async function registerUser(req) {
       endTime: endTime || null,
       profileVersion: 1,
       imageVersion: 1,
-      status: "pending_registration",
-      registrationLastAttemptAt: new Date(),
+      status: "active",
     });
     user.faceImagePath = await persistFaceImage(req.file, user._id, 1);
     try {
@@ -152,20 +142,11 @@ async function registerUser(req) {
     },
   );
 
-  const acceptedSomewhere = summary.succeeded > 0;
-  user.status = acceptedSomewhere ? "active" : "pending_registration";
-  user.registrationRetryCount = summary.total > 0 && !acceptedSomewhere ? 1 : 0;
-  user.registrationLastAttemptAt = new Date();
-  user.registrationLastError = acceptedSomewhere
-    ? null
-    : results.find((result) => result.error)?.error || "No active device accepted the registration";
-  await user.save();
-
   return {
     user,
     summary,
     results,
-    queuedForRetry: user.status === "pending_registration" || summary.failed > 0,
+    queuedForRetry: summary.failed > 0,
   };
 }
 
@@ -241,7 +222,7 @@ async function deleteUser(req) {
 
   const user = await User.findOne({
     employeeNo,
-    status: { $in: ["active", "pending_registration", "pending_review", "deleting"] },
+    status: { $in: ["active", "deleting"] },
   });
   if (!user) {
     const err = new Error("User not found");
@@ -361,47 +342,6 @@ async function recordDeviceOutcome(user, deviceDoc, outcome) {
   }
 }
 
-/**
- * Advances pending registrations only when a device has confirmed both the
- * current profile and current face image. A bounded number of failed cron
- * attempts sends the record to pending_review instead of retrying forever.
- */
-async function finalizePendingRegistrations() {
-  const pendingUsers = await User.find({ status: "pending_registration" });
-  const outcomes = [];
-
-  for (const user of pendingUsers) {
-    const rows = await DeviceUserSync.find({ userId: user._id }).lean();
-    const acceptedSomewhere = rows.some(
-      (row) =>
-        row.syncedProfileVersion === user.profileVersion &&
-        row.syncedImageVersion === user.imageVersion,
-    );
-
-    if (acceptedSomewhere) {
-      user.status = "active";
-      user.registrationRetryCount = 0;
-      user.registrationLastError = null;
-      await user.save();
-      outcomes.push({ userId: String(user._id), status: "active" });
-      continue;
-    }
-
-    // A cron pass that had active devices but no full acceptance is a real
-    // retry attempt. No-device periods are not counted against the user.
-    user.registrationRetryCount += 1;
-    user.registrationLastAttemptAt = new Date();
-    user.registrationLastError = "No active device has accepted both profile and face image";
-    if (user.registrationRetryCount >= MAX_REGISTRATION_RETRIES) {
-      user.status = "pending_review";
-    }
-    await user.save();
-    outcomes.push({ userId: String(user._id), status: user.status });
-  }
-
-  return outcomes;
-}
-
 /** Retries every deletion that is waiting on one or more active devices. */
 async function retryPendingDeletions() {
   const users = await User.find({ status: "deleting" });
@@ -419,7 +359,6 @@ module.exports = {
   updateUser,
   deleteUser,
   catchUpDevice,
-  finalizePendingRegistrations,
   retryPendingDeletions,
 };
 
@@ -461,9 +400,7 @@ async function catchUpDevice(deviceId) {
     password: decryptPassword(deviceDoc.passwordEnc),
   };
 
-  const activeUsers = await User.find({
-    status: { $in: ["active", "pending_registration"] },
-  }).lean();
+  const activeUsers = await User.find({ status: "active" }).lean();
 
   let profileSynced = 0;
   let profileFailed = 0;
