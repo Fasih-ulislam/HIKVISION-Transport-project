@@ -145,6 +145,34 @@ async function recordImageAttempt(
   });
 }
 
+/** Records a device's confirmation that an account was removed. */
+async function recordDeletionAttempt(userId, deviceId, success, errorMessage) {
+  const now = new Date();
+  await DeviceUserSync.findOneAndUpdate(
+    { userId, deviceId },
+    {
+      $set: {
+        deletionStatus: success ? "success" : "failed",
+        lastDeletionAttemptAt: now,
+        lastDeletionError: success ? null : errorMessage || "Unknown error",
+      },
+      $push: {
+        recentAttempts: {
+          $each: [{
+            kind: "deletion",
+            version: 0,
+            status: success ? "success" : "failed",
+            error: success ? null : errorMessage || "Unknown error",
+            attemptedAt: now,
+          }],
+          $slice: -20,
+        },
+      },
+    },
+    { upsert: true, returnDocument: "after" },
+  );
+}
+
 /**
  * Given a user and all of their sync rows (one per active device),
  * returns a plain-English-ish summary useful for an admin view or for
@@ -189,5 +217,6 @@ module.exports = {
   findImageSourceDevice,
   recordProfileAttempt,
   recordImageAttempt,
+  recordDeletionAttempt,
   summarizeSync,
 };

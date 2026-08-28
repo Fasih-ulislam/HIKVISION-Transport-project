@@ -38,7 +38,7 @@ const mongoose = require("mongoose");
 
 const attemptSchema = new mongoose.Schema(
   {
-    kind: { type: String, enum: ["profile", "image"], required: true },
+    kind: { type: String, enum: ["profile", "image", "deletion"], required: true },
     version: { type: Number, required: true },
     status: { type: String, enum: ["success", "failed"], required: true },
     error: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -84,6 +84,16 @@ const deviceUserSyncSchema = new mongoose.Schema(
 
     lastProfileAttemptAt: { type: Date, default: null },
     lastImageAttemptAt: { type: Date, default: null },
+
+    // Retained after a confirmed deletion so a later retry cannot mistake
+    // this device for one that needs the active user recreated.
+    deletionStatus: {
+      type: String,
+      enum: ["none", "pending", "success", "failed"],
+      default: "none",
+    },
+    lastDeletionAttemptAt: { type: Date, default: null },
+    lastDeletionError: { type: String, default: null },
 
     // Bounded recent history for debugging/audit only. Capped at 20 via
     // application logic (push + $slice in the update), never read by

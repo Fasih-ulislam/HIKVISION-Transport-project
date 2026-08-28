@@ -22,16 +22,29 @@
 // stay ignorant of sync-table concerns entirely.
 
 const User = require("../models/User");
+const fs = require("fs");
 const DeviceUserSync = require("../models/DeviceUserSync");
 const HikDevice = require("../models/HikDevice");
 const { runAcrossDevices } = require("../utils/orchestrator");
 const userController = require("../controllers/userController");
-const { hikRequest } = require("../utils/helperFuntions");
+const { hikRequest, uploadFaceDirect } = require("../utils/helperFuntions");
 const { decryptPassword } = require("../utils/crypto");
+const {
+  persistFaceImage,
+  resolveFaceImagePath,
+  removeFaceImage,
+} = require("../utils/faceStorage");
 const {
   recordProfileAttempt,
   recordImageAttempt,
+  recordDeletionAttempt,
 } = require("../utils/syncState");
+
+const configuredRegistrationRetries = Number(process.env.REGISTRATION_MAX_RETRIES || 3);
+const MAX_REGISTRATION_RETRIES =
+  Number.isInteger(configuredRegistrationRetries) && configuredRegistrationRetries > 0
+    ? configuredRegistrationRetries
+    : 3;
 
 /**
  * Registers a new user — or reactivates a previously soft-deleted one
@@ -45,23 +58,20 @@ const {
  *   2. Pre-create pending DeviceUserSync rows for all active devices.
  *   3. Fan out to every active device via orchestrator.
  *   4. Record each device's outcome.
- *   5. ROLLBACK if every device failed:
- *      - Reactivation path → flip back to inactive (preserves history).
- *      - Fresh create path → hard delete (no history worth keeping).
+ *   5. Keep the user and its durable image even if every device fails;
+ *      the scheduled retry service will catch it up later.
  *
  * @param {object} req - the original Express req (body, file)
- * @returns {Promise<{ user: object|null, summary: object, results: Array, rolledBack: boolean }>}
+ * @returns {Promise<{ user: object, summary: object, results: Array, queuedForRetry: boolean }>}
  */
 async function registerUser(req) {
   const { employeeNo, name, userType, beginTime, endTime } = req.body || {};
 
-  // Check for a previously soft-deleted record with the same employeeNo.
-  // A live (status: "active") duplicate is a real conflict and should
-  // fall through to User.create() so the unique-index error surfaces
-  // naturally as a 500 — callers should deduplicate before registering.
+  // A rejected or previously deleted registration may be submitted again
+  // with a corrected image. A live active/deleting user remains a conflict.
   const existingInactive = await User.findOne({
     employeeNo,
-    status: "inactive",
+    status: { $in: ["inactive", "pending_registration", "pending_review"] },
   });
 
   const wasReactivated = !!existingInactive;
@@ -77,10 +87,23 @@ async function registerUser(req) {
     existingInactive.endTime = endTime || null;
     existingInactive.profileVersion += 1;
     existingInactive.imageVersion += 1;
-    existingInactive.status = "active";
-    user = await existingInactive.save();
+    existingInactive.status = "pending_registration";
+    existingInactive.registrationRetryCount = 0;
+    existingInactive.registrationLastAttemptAt = new Date();
+    existingInactive.registrationLastError = null;
+    existingInactive.faceImagePath = await persistFaceImage(
+      req.file,
+      existingInactive._id,
+      existingInactive.imageVersion,
+    );
+    try {
+      user = await existingInactive.save();
+    } catch (err) {
+      await removeFaceImage(existingInactive.faceImagePath);
+      throw err;
+    }
   } else {
-    user = await User.create({
+    user = new User({
       employeeNo,
       name,
       userType: userType || "normal",
@@ -88,7 +111,16 @@ async function registerUser(req) {
       endTime: endTime || null,
       profileVersion: 1,
       imageVersion: 1,
+      status: "pending_registration",
+      registrationLastAttemptAt: new Date(),
     });
+    user.faceImagePath = await persistFaceImage(req.file, user._id, 1);
+    try {
+      await user.save();
+    } catch (err) {
+      await removeFaceImage(user.faceImagePath);
+      throw err;
+    }
   }
 
   // Pre-create pending rows for every active device targeted by this
@@ -120,25 +152,21 @@ async function registerUser(req) {
     },
   );
 
-  if (summary.total > 0 && summary.succeeded === 0) {
-    // Every device failed — this user never actually took effect
-    // anywhere. Roll back to avoid leaving a permanently-stuck record.
-    await DeviceUserSync.deleteMany({ userId: user._id });
+  const acceptedSomewhere = summary.succeeded > 0;
+  user.status = acceptedSomewhere ? "active" : "pending_registration";
+  user.registrationRetryCount = summary.total > 0 && !acceptedSomewhere ? 1 : 0;
+  user.registrationLastAttemptAt = new Date();
+  user.registrationLastError = acceptedSomewhere
+    ? null
+    : results.find((result) => result.error)?.error || "No active device accepted the registration";
+  await user.save();
 
-    if (wasReactivated) {
-      // Preserve history — just flip back to inactive rather than
-      // hard-deleting. The previous person's audit trail stays intact.
-      user.status = "inactive";
-      await user.save();
-    } else {
-      // Fresh create with no history worth keeping — hard delete.
-      await User.deleteOne({ _id: user._id });
-    }
-
-    return { user: null, summary, results, rolledBack: true };
-  }
-
-  return { user, summary, results, rolledBack: false };
+  return {
+    user,
+    summary,
+    results,
+    queuedForRetry: user.status === "pending_registration" || summary.failed > 0,
+  };
 }
 
 /**
@@ -171,11 +199,20 @@ async function updateUser(req) {
     if (beginTime) user.beginTime = beginTime;
     if (endTime) user.endTime = endTime;
   }
+  let newImagePath;
   if (hasImageChange) {
-    user.imageVersion += 1;
+    const nextImageVersion = user.imageVersion + 1;
+    newImagePath = await persistFaceImage(req.file, user._id, nextImageVersion);
+    user.imageVersion = nextImageVersion;
+    user.faceImagePath = newImagePath;
   }
   if (hasProfileChange || hasImageChange) {
-    await user.save();
+    try {
+      await user.save();
+    } catch (err) {
+      if (newImagePath) await removeFaceImage(newImagePath);
+      throw err;
+    }
   }
 
   const { summary, results } = await runAcrossDevices(
@@ -191,22 +228,10 @@ async function updateUser(req) {
 }
 
 /**
- * Deletes a user from every active device, pruning that device's
- * DeviceUserSync row as each deletion is confirmed. The User document
- * itself is only ever SOFT-deleted (status: "inactive") — never
- * removed from our DB — and only once every targeted active device has
- * confirmed the deletion. If any device fails to delete, the User row
- * stays "active" and the still-pending devices remain as ordinary
- * catch-up candidates (their sync row simply isn't pruned yet); a
- * retry of this same deleteUser call will re-attempt only the
- * still-present rows' devices implicitly, since deletion on an already
- * up-to-date device is harmless to repeat.
- *
- * WHY SOFT-DELETE: keeps the User row as a durable record (audit trail,
- * "previously enrolled" history) without it being treated as a live,
- * syncable user — catch-up sweeps and update flows should always filter
- * on status: "active" so an inactive/soft-deleted user is never
- * accidentally re-pushed to a device that's catching up.
+ * Starts a durable deletion workflow. A user becomes `deleting` before any
+ * device call, so normal catch-up can never recreate it on devices that have
+ * already removed it. The retry worker keeps attempting outstanding devices
+ * until every registered device has confirmed removal, then marks it inactive.
  *
  * @param {object} req - the original Express req (params.employeeNo)
  * @returns {Promise<{ user: object, summary: object, results: Array, fullyDeleted: boolean }>}
@@ -214,50 +239,72 @@ async function updateUser(req) {
 async function deleteUser(req) {
   const { employeeNo } = req.params;
 
-  const user = await User.findOne({ employeeNo, status: "active" });
+  const user = await User.findOne({
+    employeeNo,
+    status: { $in: ["active", "pending_registration", "pending_review", "deleting"] },
+  });
   if (!user) {
     const err = new Error("User not found");
     err.status = 404;
     throw err;
   }
 
-  const { summary, results } = await runAcrossDevices(
-    userController.deleteStudent,
-    req,
-    {
-      onDeviceSettled: (deviceDoc, outcome) =>
-        pruneSyncRowOnDelete(user, deviceDoc, outcome),
-    },
-  );
+  user.status = "deleting";
+  user.deletionRequestedAt = user.deletionRequestedAt || new Date();
+  await user.save();
 
-  const fullyDeleted =
-    summary.total === 0 || summary.succeeded === summary.total;
-
-  if (fullyDeleted) {
-    user.status = "inactive";
-    await user.save();
-  }
-  // If not fully deleted: User stays "active" on purpose. The devices
-  // that DID succeed already had their sync rows pruned (see below);
-  // the ones that failed still have a row, so they surface naturally
-  // as "needs deletion retry" rather than silently vanishing from view.
+  const { summary, results } = await retryDeletionForUser(user);
+  const fullyDeleted = await finalizeDeletion(user);
 
   return { user, summary, results, fullyDeleted };
 }
 
 /**
- * Removes a device's DeviceUserSync row once that device confirms the
- * user was deleted. A failed deletion leaves the row in place — it's
- * not "synced" in either direction, it's "still has stale data we
- * couldn't remove," which is exactly what an admin retrying deletion
- * needs to be able to see.
+ * Performs deletion only for active devices which have not already confirmed
+ * removal. Confirmation is retained in DeviceUserSync as an audit record.
  */
-async function pruneSyncRowOnDelete(user, deviceDoc, outcome) {
-  if (outcome?.status !== "success") return;
-  await DeviceUserSync.deleteOne({
-    userId: user._id,
-    deviceId: deviceDoc._id,
+async function retryDeletionForUser(user) {
+  const activeDevices = await HikDevice.find({ status: "active" }, "_id").lean();
+  const rows = await DeviceUserSync.find({ userId: user._id }, "deviceId deletionStatus").lean();
+  const completedIds = new Set(
+    rows.filter((row) => row.deletionStatus === "success").map((row) => String(row.deviceId)),
+  );
+  const targetIds = activeDevices
+    .map((device) => device._id)
+    .filter((id) => !completedIds.has(String(id)));
+
+  if (targetIds.length === 0) {
+    return { summary: { total: 0, succeeded: 0, failed: 0 }, results: [] };
+  }
+
+  return runAcrossDevices(userController.deleteStudent, {
+    params: { employeeNo: user.employeeNo },
+  }, {
+    filter: { _id: { $in: targetIds }, status: "active" },
+    onDeviceSettled: (deviceDoc, outcome) =>
+      recordDeletionAttempt(
+        String(user._id),
+        String(deviceDoc._id),
+        outcome?.status === "success",
+        outcome?.error,
+      ),
   });
+}
+
+async function finalizeDeletion(user) {
+  const devices = await HikDevice.find({}, "_id").lean();
+  const rows = await DeviceUserSync.find(
+    { userId: user._id, deletionStatus: "success" },
+    "deviceId",
+  ).lean();
+  const completedIds = new Set(rows.map((row) => String(row.deviceId)));
+  const fullyDeleted = devices.every((device) => completedIds.has(String(device._id)));
+
+  if (fullyDeleted) {
+    user.status = "inactive";
+    await user.save();
+  }
+  return fullyDeleted;
 }
 
 /**
@@ -314,11 +361,66 @@ async function recordDeviceOutcome(user, deviceDoc, outcome) {
   }
 }
 
+/**
+ * Advances pending registrations only when a device has confirmed both the
+ * current profile and current face image. A bounded number of failed cron
+ * attempts sends the record to pending_review instead of retrying forever.
+ */
+async function finalizePendingRegistrations() {
+  const pendingUsers = await User.find({ status: "pending_registration" });
+  const outcomes = [];
+
+  for (const user of pendingUsers) {
+    const rows = await DeviceUserSync.find({ userId: user._id }).lean();
+    const acceptedSomewhere = rows.some(
+      (row) =>
+        row.syncedProfileVersion === user.profileVersion &&
+        row.syncedImageVersion === user.imageVersion,
+    );
+
+    if (acceptedSomewhere) {
+      user.status = "active";
+      user.registrationRetryCount = 0;
+      user.registrationLastError = null;
+      await user.save();
+      outcomes.push({ userId: String(user._id), status: "active" });
+      continue;
+    }
+
+    // A cron pass that had active devices but no full acceptance is a real
+    // retry attempt. No-device periods are not counted against the user.
+    user.registrationRetryCount += 1;
+    user.registrationLastAttemptAt = new Date();
+    user.registrationLastError = "No active device has accepted both profile and face image";
+    if (user.registrationRetryCount >= MAX_REGISTRATION_RETRIES) {
+      user.status = "pending_review";
+    }
+    await user.save();
+    outcomes.push({ userId: String(user._id), status: user.status });
+  }
+
+  return outcomes;
+}
+
+/** Retries every deletion that is waiting on one or more active devices. */
+async function retryPendingDeletions() {
+  const users = await User.find({ status: "deleting" });
+  const outcomes = [];
+  for (const user of users) {
+    const { summary } = await retryDeletionForUser(user);
+    const fullyDeleted = await finalizeDeletion(user);
+    outcomes.push({ userId: String(user._id), summary, fullyDeleted });
+  }
+  return outcomes;
+}
+
 module.exports = {
   registerUser,
   updateUser,
   deleteUser,
   catchUpDevice,
+  finalizePendingRegistrations,
+  retryPendingDeletions,
 };
 
 /**
@@ -333,20 +435,11 @@ module.exports = {
  * our own DB (no peer device needed — we already have the canonical
  * profile fields in User).
  *
- * IMAGE catch-up is INTENTIONALLY STUBBED. Per design, catching up an
- * image requires pulling the current face from a peer device already
- * at the user's current imageVersion (we don't persist images
- * ourselves — see User.js header). That requires a "fetch face image
- * from device" ISAPI call that does not exist yet in helperFuntions.js
- * (only uploadFaceDirect / deleteFace, both push-only, exist today).
- * Calling this with a user that needs image catch-up will record a
- * loud, visible "blocked_no_source" failure via recordImageAttempt —
- * it will NEVER silently skip or silently mark an image as synced
- * when it wasn't actually pushed. Implement the real pull-and-push
- * once that endpoint is available, then replace the stub below.
+ * Image catch-up uploads the current, versioned JPEG from durable local
+ * storage, so it does not depend on another device being online.
  *
  * @param {string} deviceId
- * @returns {Promise<{ deviceId: string, checked: number, profileSynced: number, profileFailed: number, imageBlocked: number }>}
+ * @returns {Promise<{ deviceId: string, checked: number, profileSynced: number, profileFailed: number, imageSynced: number, imageFailed: number, imageBlocked: number }>}
  */
 async function catchUpDevice(deviceId) {
   const deviceDoc = await HikDevice.findById(deviceId).lean();
@@ -368,10 +461,14 @@ async function catchUpDevice(deviceId) {
     password: decryptPassword(deviceDoc.passwordEnc),
   };
 
-  const activeUsers = await User.find({ status: "active" }).lean();
+  const activeUsers = await User.find({
+    status: { $in: ["active", "pending_registration"] },
+  }).lean();
 
   let profileSynced = 0;
   let profileFailed = 0;
+  let imageSynced = 0;
+  let imageFailed = 0;
   let imageBlocked = 0;
 
   for (const user of activeUsers) {
@@ -397,16 +494,48 @@ async function catchUpDevice(deviceId) {
     }
 
     if (syncedImageVersion < user.imageVersion) {
-      // STUB — see function header. Recorded honestly as blocked, never
-      // as a fabricated success.
+      let imagePath;
+      try {
+        imagePath = resolveFaceImagePath(user.faceImagePath);
+      } catch (err) {
+        await recordImageAttempt(
+          String(user._id),
+          String(deviceDoc._id),
+          user.imageVersion,
+          "blocked_no_source",
+          err.message,
+        );
+        imageBlocked += 1;
+        continue;
+      }
+
+      if (!imagePath || !fs.existsSync(imagePath)) {
+        await recordImageAttempt(
+          String(user._id),
+          String(deviceDoc._id),
+          user.imageVersion,
+          "blocked_no_source",
+          "Current face image is missing from durable storage.",
+        );
+        imageBlocked += 1;
+        continue;
+      }
+
+      const imageResult = await uploadFaceDirect(
+        deviceContext,
+        user.employeeNo,
+        imagePath,
+        true,
+      );
       await recordImageAttempt(
         String(user._id),
         String(deviceDoc._id),
         user.imageVersion,
-        "blocked_no_source",
-        "Image catch-up not yet implemented: no face-retrieval endpoint exists to pull the current image from a peer device.",
+        imageResult.success ? "success" : "failed",
+        imageResult.error,
       );
-      imageBlocked += 1;
+      if (imageResult.success) imageSynced += 1;
+      else imageFailed += 1;
     }
   }
 
@@ -415,6 +544,8 @@ async function catchUpDevice(deviceId) {
     checked: activeUsers.length,
     profileSynced,
     profileFailed,
+    imageSynced,
+    imageFailed,
     imageBlocked,
   };
 }
@@ -452,8 +583,8 @@ async function pushProfileToDevice(deviceContext, user) {
       doorRight: "1",
       Valid: {
         enable: true,
-        beginTime: user.beginTime,
-        endTime: user.endTime,
+        beginTime: formatHikTime(user.beginTime),
+        endTime: formatHikTime(user.endTime),
       },
     },
   };
@@ -483,4 +614,11 @@ async function pushProfileToDevice(deviceContext, user) {
     return { success: false, error: result.error || "Failed to push profile" };
   }
   return { success: true };
+}
+
+// Mongoose hydrates beginTime/endTime as Date instances, while the device
+// requires the exact no-timezone form used by the public API.
+function formatHikTime(value) {
+  if (!value) return null;
+  return new Date(value).toISOString().slice(0, 19);
 }

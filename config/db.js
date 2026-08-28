@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { startAlertStreams } = require("../services/alertStreamService");
+const { startSyncRetryScheduler } = require("../services/syncRetryService");
 
 const connectDB = async () => {
   try {
@@ -8,6 +9,7 @@ const connectDB = async () => {
     console.log(
       `MongoDB Connected: ${conn.connection.host}/${conn.connection.name}`,
     );
+    startSyncRetryScheduler();
     //startAlertStreams();
   } catch (error) {
     console.error("MongoDB Connection Error:", error.message);

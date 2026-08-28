@@ -1,19 +1,14 @@
 // models/User.js
 //
 // Source of truth for "what should every active device have for this
-// user." We deliberately do NOT persist the face image (binary or even
-// a path) here — images are large enough that storing them per-user in
-// Mongo adds real overhead for data we don't otherwise need to query or
-// serve from our own DB. Devices are themselves the durable store for
-// the image; when a lagging device needs catching up, we pull the
-// current image from any peer device already at the current
-// imageVersion (see DeviceUserSync) rather than keeping our own copy.
+// user." The face image itself is stored as a durable, versioned JPEG on the
+// application volume. Mongo stores only its relative path, keeping documents
+// small while allowing any device to be retried without relying on a peer.
 //
 // VERSIONING: profileVersion and imageVersion are separate counters,
 // each incremented only when that specific kind of data actually
-// changes. This lets sync logic skip the (comparatively expensive)
-// "pull image from a peer device" step entirely when only profile
-// fields changed, and vice versa.
+// changes. This lets sync logic skip an image upload entirely when only
+// profile fields changed, and vice versa.
 //
 // Neither version is a timestamp. Timestamps drift across retries and
 // clock skew between requests; a plain incrementing integer makes "is
@@ -35,15 +30,27 @@ const userSchema = new mongoose.Schema(
     profileVersion: { type: Number, required: true, default: 1 },
 
     // Bumped any time the user's face image is replaced. Does NOT
-    // change when only profile fields change. There is no imageUrl /
-    // imagePath field here by design — see module comment above.
+    // change when only profile fields change.
     imageVersion: { type: Number, required: true, default: 1 },
+
+    // Relative path to the durable JPEG used by retry and device catch-up.
+    // Null is retained temporarily for users created before durable image
+    // storage was introduced; retries report those records as blocked.
+    faceImagePath: { type: String, default: null },
 
     status: {
       type: String,
-      enum: ["active", "inactive"],
-      default: "active",
+      // pending_registration never grants access until at least one device
+      // confirms both profile and face. pending_review requires an operator
+      // to re-submit a corrected registration. deleting only retries removal.
+      enum: ["pending_registration", "pending_review", "active", "deleting", "inactive"],
+      default: "pending_registration",
     },
+
+    registrationRetryCount: { type: Number, required: true, default: 0 },
+    registrationLastAttemptAt: { type: Date, default: null },
+    registrationLastError: { type: String, default: null },
+    deletionRequestedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

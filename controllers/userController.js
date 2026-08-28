@@ -181,7 +181,14 @@ module.exports.deleteStudent = async (device, req) => {
     !currentUser.success ||
     !currentUser.data?.UserInfoSearch?.UserInfo?.[0]
   ) {
-    return { success: false, status: 404, error: "User not found on device" };
+    // Deletion is idempotent: an already-absent user has reached the desired
+    // device state and must be treated as success by the retry worker.
+    return {
+      success: true,
+      status: 200,
+      alreadyAbsent: true,
+      message: `Student ${employeeNo} is already absent`,
+    };
   }
 
   const result = await hikRequest(

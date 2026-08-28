@@ -132,6 +132,18 @@ router.get("/db/all", async (req, res) => {
   }
 });
 
+// Registrations that no device accepted after the configured retry limit.
+// Re-submit the normal register endpoint with a corrected image to retry one.
+router.get("/db/review/pending", async (req, res) => {
+  try {
+    const User = require("../models/User");
+    const users = await User.find({ status: "pending_review" }).lean();
+    return res.json({ total: users.length, users });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Get Student by ID (DB-backed)
 router.get("/db/:employeeNo", async (req, res) => {
   try {
