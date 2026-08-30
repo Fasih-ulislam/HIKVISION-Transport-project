@@ -2,6 +2,9 @@
 const HikDevice = require("../models/HikDevice");
 const { encryptPassword } = require("../utils/crypto");
 const { catchUpDevice } = require("../services/userSyncService");
+const { startAlertStreams, stopAlertStream } = require("../services/alertStreamService");
+
+const eventStreamingEnabled = () => process.env.DEVICE_EVENT_STREAM_ENABLED === "true";
 
 // ─── Register a new device ────────────────────────────────────────────────────
 module.exports.registerDevice = async (req, res) => {
@@ -31,6 +34,8 @@ module.exports.registerDevice = async (req, res) => {
       status: "active",
     });
 
+    if (eventStreamingEnabled()) startAlertStreams({ _id: device._id });
+
     return res.status(201).json({
       success: true,
       device: {
@@ -46,6 +51,36 @@ module.exports.registerDevice = async (req, res) => {
 
     return res.status(500).json({ error: "Failed to register device" });
   }
+};
+
+// ─── Update device details ──────────────────────────────────────────────────
+module.exports.updateDevice = async (req, res) => {
+  const { id } = req.params;
+  const { ip, username, password, name } = req.body || {};
+  const update = {};
+  if (ip !== undefined) {
+    if (!String(ip).trim()) return res.status(400).json({ error: "ip cannot be empty" });
+    const duplicate = await HikDevice.findOne({ ip: String(ip).trim(), _id: { $ne: id } });
+    if (duplicate) return res.status(409).json({ error: `Device with IP ${ip} is already registered` });
+    update.ip = String(ip).trim();
+  }
+  if (username !== undefined) {
+    if (!String(username).trim()) return res.status(400).json({ error: "username cannot be empty" });
+    update.username = String(username).trim();
+  }
+  if (name !== undefined) update.name = String(name).trim() || null;
+  if (password !== undefined) {
+    if (!String(password)) return res.status(400).json({ error: "password cannot be empty" });
+    update.passwordEnc = encryptPassword(password);
+  }
+  if (!Object.keys(update).length) return res.status(400).json({ error: "No device fields supplied" });
+  const device = await HikDevice.findByIdAndUpdate(id, update, { returnDocument: "after", select: "ip username name status lastStatus lastAttemptAt lastError createdAt" });
+  if (!device) return res.status(404).json({ error: "Device not found" });
+  if (eventStreamingEnabled() && (update.ip || update.username || update.passwordEnc)) {
+    stopAlertStream(id);
+    if (device.status === "active") startAlertStreams({ _id: device._id });
+  }
+  return res.json({ success: true, device });
 };
 
 // ─── List devices (never returns credentials) ─────────────────────────────────
@@ -116,6 +151,11 @@ module.exports.setDeviceStatus = async (req, res) => {
     });
   }
 
+  if (eventStreamingEnabled()) {
+    if (status === "active") startAlertStreams({ _id: device._id });
+    else stopAlertStream(device._id);
+  }
+
   return res.json({
     success: true,
     device,
@@ -131,6 +171,8 @@ module.exports.deleteDevice = async (req, res) => {
   if (!device) {
     return res.status(404).json({ error: "Device not found" });
   }
+
+  stopAlertStream(device._id);
 
   return res.json({ success: true, message: `Device ${device.ip} removed` });
 };

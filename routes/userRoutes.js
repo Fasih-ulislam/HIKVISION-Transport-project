@@ -106,18 +106,6 @@ router.put(
   viaService(userSyncService.updateUser),
 );
 
-// ─── Get Students data (device-direct) ────────────────────────────────────────
-// Reads straight from a device's own UserInfo/Search, bypassing User/
-// DeviceUserSync entirely. Kept as its own independent route rather than
-// merged with the DB-backed read below — these answer different
-// questions ("what does this specific device currently have" vs "what
-// does our system believe is true"), and conflating them would make it
-// impossible to ever debug a device that's drifted from our records.
-router.get("/", fanOut(userController.getStudents));
-
-// Get Student by ID (device-direct)
-router.get("/:employeeNo", fanOut(userController.getStudent));
-
 // ─── Get Students data (DB-backed) ────────────────────────────────────────────
 // Reads from our own User collection — fast, no device round-trip, and
 // reflects what we believe the canonical state to be regardless of
@@ -146,5 +134,11 @@ router.get("/db/:employeeNo", async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Get Students data (device-direct) ────────────────────────────────────────
+// Keep these generic routes after /db/* so Express does not treat "db" as an
+// employee number.
+router.get("/", fanOut(userController.getStudents));
+router.get("/:employeeNo", fanOut(userController.getStudent));
 
 module.exports = router;

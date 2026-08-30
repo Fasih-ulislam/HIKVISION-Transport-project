@@ -1,56 +1,24 @@
-const { hikRequest } = require("../utils/helperFuntions");
+const DeviceLog = require("../models/deviceLogsModel");
 
 module.exports.deviceLogs = async (req, res) => {
-  const {
-    beginTime,
-    endTime,
-    position = 0,
-    limit = 50,
-    filter, // "verified" | "failed" | "all"
-  } = req.query;
-
-  const filterMap = {
-    all: { major: 5, minor: 0 },
-    verified: { major: 5, minor: 75 }, // face recognized, access granted
-    blacklist: { major: 5, minor: 6 }, // blacklisted user attempt
-    doorOpen: { major: 5, minor: 21 }, // door opened
-    doorClose: { major: 5, minor: 22 }, // door closed / no face detected
-    duplicate: { major: 5, minor: 104 }, // repeat scan too fast
-  };
-
-  const { major, minor } = filterMap[filter] || filterMap.all;
-
-  const condition = {
-    AcsEventCond: {
-      searchID: Date.now().toString(),
-      searchResultPosition: Number(position),
-      maxResults: Number(limit),
-      major,
-      minor,
-    },
-  };
-
-  // Add time range only if provided
-  if (beginTime) condition.AcsEventCond.startTime = beginTime + "+05:00";
-  if (endTime) condition.AcsEventCond.endTime = endTime + "+05:00";
-
-  const result = await hikRequest(
-    "POST",
-    "/ISAPI/AccessControl/AcsEvent?format=json",
-    condition,
-  );
-
-  if (!result.success) {
-    return res
-      .status(500)
-      .json({ error: "Failed to fetch logs", detail: result.error });
+  try {
+    const { beginTime, endTime, deviceId, filter } = req.query;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const query = {};
+    if (deviceId) query.deviceId = deviceId;
+    if (beginTime || endTime) query.time = {};
+    if (beginTime) query.time.$gte = new Date(beginTime);
+    if (endTime) query.time.$lte = new Date(endTime);
+    if (filter && filter !== "all") {
+      const eventTypes = { verified: "face_verified", blacklist: "blacklist_detected", doorOpen: "door_opened", doorClose: "door_closed", duplicate: "duplicate_scan" };
+      if (eventTypes[filter]) query.eventType = eventTypes[filter];
+    }
+    const [logs, total] = await Promise.all([
+      DeviceLog.find(query).sort({ time: -1 }).limit(limit).populate("deviceId", "name ip").lean(),
+      DeviceLog.countDocuments(query),
+    ]);
+    return res.json({ success: true, total, logs });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to fetch stored device logs", detail: err.message });
   }
-
-  return res.json({
-    success: true,
-    position: Number(position),
-    limit: Number(limit),
-    filter: filter || "all",
-    data: result.data,
-  });
 };

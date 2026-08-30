@@ -9,6 +9,9 @@ router.post("/", deviceController.registerDevice);
 // ─── List all devices (no credentials returned) ───────────────────────────────
 router.get("/", deviceController.listDevices);
 
+// ─── Update device details (password is optional) ────────────────────────────
+router.patch("/:id", deviceController.updateDevice);
+
 // ─── Enable/disable a device ───────────────────────────────────────────────────
 router.patch("/:id/status", deviceController.setDeviceStatus);
 

@@ -4,6 +4,7 @@ const debugRoutes = require("./routes/debugRoutes");
 const userRoutes = require("./routes/userRoutes");
 const deviceRoutes = require("./routes/deviceRoutes");
 const loggingRoutes = require("./routes/loggingRoutes");
+const dashboardRoutes = require("./routes/dashboardRoutes");
 const logger = require("./middlewares/loggerMiddleware");
 const basicAuth = require("./middlewares/authMiddleware");
 const connectDB = require("./config/db");
@@ -17,8 +18,9 @@ connectDB();
 //app.use("/uploads", express.static("uploads"));
 
 app.use(express.json({ limit: "10mb" }));
+app.use(express.static("frontend"));
 
-//app.use(logger); //enable when logging
+app.use(logger);
 
 //basic health check for server
 app.get("/health-check", (req, res) => {
@@ -31,6 +33,7 @@ app.get("/health-check", (req, res) => {
 app.use("/students", userRoutes);
 app.use("/logs", loggingRoutes);
 app.use("/devices", deviceRoutes);
+app.use("/dashboard", dashboardRoutes);
 
 // Debug Routes (enable when testing)
 // app.use("/debug", debugRoutes);

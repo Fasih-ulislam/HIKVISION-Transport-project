@@ -1,6 +1,15 @@
 // middleware/logger.js
 const Log = require("../models/logsModel");
 
+const SECRET_FIELDS = new Set(["password", "passwordEnc", "faceImage", "image", "authorization"]);
+function redact(value) {
+  if (Array.isArray(value)) return value.map(redact);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key, SECRET_FIELDS.has(key) || /image|password/i.test(key) ? "[REDACTED]" : redact(item),
+  ]));
+}
+
 module.exports = (req, res, next) => {
   const start = Date.now();
 
@@ -20,8 +29,8 @@ module.exports = (req, res, next) => {
         url: req.originalUrl,
         statusCode: res.statusCode,
 
-        requestBody: req.body,
-        responseBody,
+        requestBody: redact(req.body),
+        responseBody: redact(responseBody),
 
         params: req.params,
         query: req.query,

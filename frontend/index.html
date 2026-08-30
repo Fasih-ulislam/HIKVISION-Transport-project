@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hikvision Transport | Operations</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar"><div><p class="eyebrow">GIFT UNIVERSITY</p><h1>Transport Operations</h1></div><button id="refresh" class="button secondary">Refresh data</button></header>
+    <main>
+      <p id="notice" class="notice" aria-live="polite"></p>
+      <section id="stats" class="stats"></section>
+
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">FLEET</p><h2>Devices</h2></div><button id="new-device" class="button">Register device</button></div>
+        <div id="device-form-wrap" class="form-wrap hidden">
+          <form id="device-form" class="device-form">
+            <input type="hidden" name="id" />
+            <label>Name <input name="name" placeholder="e.g. Bus 14" /></label>
+            <label>IP address <input name="ip" required placeholder="192.168.1.10" /></label>
+            <label>Username <input name="username" required placeholder="admin" /></label>
+            <label>Password <input name="password" type="password" placeholder="Required for new devices" /></label>
+            <div class="form-actions"><button class="button" type="submit">Save device</button><button id="cancel-device" class="button secondary" type="button">Cancel</button></div>
+          </form>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Device</th><th>State</th><th>Last contact</th><th>Users</th><th></th></tr></thead><tbody id="devices"></tbody></table></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading"><div><p class="eyebrow">DIRECTORY</p><h2>User sync coverage</h2></div><input id="user-search" class="search" placeholder="Search name or ID" /></div>
+        <p class="subtle">Active devices are the required target set. A user listed here as incomplete needs syncing to one or more active devices.</p>
+        <div class="table-wrap"><table><thead><tr><th>User</th><th>Synced to</th><th>Needs sync on</th></tr></thead><tbody id="users"></tbody></table></div>
+      </section>
+
+      <section class="grid-2">
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">DEVICE EVENTS</p><h2>Recent access events</h2></div><button id="load-events" class="text-button">View all</button></div><div id="events" class="log-list"></div></section>
+        <section class="panel"><div class="section-heading"><div><p class="eyebrow">API ACTIVITY</p><h2>Recent requests</h2></div><button id="load-requests" class="text-button">View all</button></div><div id="requests" class="log-list"></div></section>
+      </section>
+    </main>
+    <dialog id="logs-dialog"><div class="dialog-head"><h2 id="dialog-title">Logs</h2><button id="close-dialog" class="text-button">Close</button></div><div id="dialog-content" class="log-list"></div></dialog>
+    <script src="app.js"></script>
+  </body>
+</html>
