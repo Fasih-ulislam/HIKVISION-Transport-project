@@ -12,7 +12,7 @@ const connectDB = async () => {
     );
     runUisImport().catch((err) => console.error("[uis-import] unexpected startup failure:", err.message));
     startSyncRetryScheduler();
-    //startUisImportScheduler();
+    startUisImportScheduler();
     if (process.env.DEVICE_EVENT_STREAM_ENABLED === "true") startAlertStreams();
   } catch (error) {
     console.error("MongoDB Connection Error:", error.message);

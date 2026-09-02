@@ -29,6 +29,8 @@ app.get("/health-check", (req, res) => {
 
 // Authentication on all routes
 //app.use(basicAuth);
+
+
 // Protected Routes
 app.use("/students", userRoutes);
 app.use("/logs", loggingRoutes);
