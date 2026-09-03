@@ -1,12 +1,11 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
-const sharp = require("sharp");
 const cron = require("node-cron");
 const User = require("../../models/User");
-const UisImportState = require("../../models/UisImportState");
-const { registerUser, updateUser } = require("../userSyncService");
+const { registerUser, updateUser, deleteUser } = require("../userSyncService");
 const { UisSoapClient } = require("./uisSoapClient");
+const { processFaceImageBuffer } = require("../../utils/faceImageProcessor");
 
 let scheduledTask = null;
 let importInProgress = false;
@@ -41,12 +40,14 @@ function formatUisDate(date) {
   return `${String(date.getDate()).padStart(2, "0")}-${months[date.getMonth()]}-${date.getFullYear()}`;
 }
 
+// Pulls in everything not yet marked, going back far enough that any
+// historical backlog gets swept up once, not just today's registrations.
 function newUserDateRange() {
-  const lookback = Math.max(0, Number.parseInt(process.env.UIS_NEW_USERS_LOOKBACK_DAYS || "0", 10) || 0);
+  const yearsBack = Math.max(0, Number.parseInt(process.env.UIS_NEW_USERS_LOOKBACK_YEARS || "20", 10) || 20);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const from = new Date(today);
-  from.setDate(from.getDate() - lookback);
+  from.setFullYear(from.getFullYear() - yearsBack);
   return { dateFrom: formatUisDate(from), dateTo: formatUisDate(today) };
 }
 
@@ -67,11 +68,10 @@ function mapUisStudent(record) {
     beginTime: toIsoDate(record.EntryDate, begin),
     endTime: end.toISOString(),
     faceImage: String(record.FrontPic || "").trim(),
+    // "D" = delete, "A" = active (per UIS doc's Status A/D field).
+    status: String(record.Status || "").trim().toUpperCase(),
+    modifyRemarks: String(record.ModifyRemarks || "").trim(),
   };
-}
-
-function fingerprint(student) {
-  return crypto.createHash("sha256").update(JSON.stringify(student)).digest("hex");
 }
 
 async function makeFaceUpload(base64Image, formNo) {
@@ -83,24 +83,10 @@ async function makeFaceUpload(base64Image, formNo) {
   const input = Buffer.from(cleanBase64, "base64");
   if (!input.length) throw new Error("UIS FrontPic is empty or invalid base64");
 
-  const attempts = [
-    { width: 1200, quality: 85 },
-    { width: 800, quality: 75 },
-    { width: 600, quality: 65 },
-    { width: 400, quality: 50 },
-  ];
-  let output;
-  for (const attempt of attempts) {
-    output = await sharp(input, { failOn: "none" })
-      .rotate()
-      .resize({ width: attempt.width, withoutEnlargement: true })
-      .jpeg({ quality: attempt.quality })
-      .toBuffer();
-    if (output.length <= 200 * 1024) break;
-  }
-  if (!output || output.length > 200 * 1024) {
-    throw new Error("UIS FrontPic could not be compressed below 200 KB");
-  }
+  // Same processing the /register and /update routes use via
+  // decodeBase64Image, so a UIS-imported image and a directly-uploaded
+  // one go through identical resize/quality logic.
+  const output = await processFaceImageBuffer(input);
 
   const uploadDir = path.resolve(process.cwd(), "uploads");
   await fs.mkdir(uploadDir, { recursive: true });
@@ -115,21 +101,63 @@ async function removeUpload(file) {
   try { await fs.unlink(file.path); } catch (err) { if (err.code !== "ENOENT") throw err; }
 }
 
-async function markIfNeeded(client, state, formNo, isNewRecord) {
-  if (!isNewRecord || state?.registeredMarkedAt) return;
-  await client.markRegisteredUser(formNo);
-  await UisImportState.updateOne({ formNo }, { $set: { registeredMarkedAt: new Date() } });
+// Errors that mean "we couldn't reach/trust this device," not "the device
+// evaluated the image and rejected it." Heuristic based on common
+// connectivity/credential failure text — if utils/helperFuntions.js gives
+// hikRequest/uploadFaceDirect a more structured error shape later, this
+// can be replaced with an exact check instead of pattern-matching.
+const CONNECTIVITY_ERROR_PATTERN = /timeout|timed out|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|network|unreachable|decrypt/i;
+
+function classifyDeviceImageOutcome(deviceResult) {
+  const imagePart = deviceResult?.raw?.parts?.image;
+  // No parts.image at all means either the device never got far enough
+  // to attempt the image (credential/connection failure before the call,
+  // or an unexpected throw caught by the orchestrator) — not evidence
+  // the image itself is bad.
+  if (!imagePart) return "unknown";
+  if (imagePart.success) return "accepted";
+  if (imagePart.error && CONNECTIVITY_ERROR_PATTERN.test(imagePart.error)) return "unknown";
+  return "rejected";
 }
 
-async function importOne(client, { formNo, isNewRecord }) {
+// Turns a registerUser/updateUser outcome into a FraiVerifyStatus/remarks
+// pair. Rule: if even one device confirms the image is fine, the image
+// isn't at fault — any other failing devices are a device-level problem
+// for the existing catch-up retry service to handle, not FRAI's concern.
+// Only mark the image itself bad when nothing accepted it and at least
+// one device gave a real (non-connectivity) rejection.
+function buildFraiOutcome({ summary, results }) {
+  if (!summary || summary.total === 0) {
+    return { status: "N", remarks: "No active devices available to verify image" };
+  }
+
+  const classified = results.map(classifyDeviceImageOutcome);
+  const acceptedCount = classified.filter((c) => c === "accepted").length;
+  const rejectedIndex = classified.findIndex((c) => c === "rejected");
+
+  if (acceptedCount > 0) {
+    return { status: "Y", remarks: "Registration successful" };
+  }
+
+  if (rejectedIndex !== -1) {
+    const error = results[rejectedIndex]?.raw?.parts?.image?.error;
+    const remarks = `Image not accepted by device${error ? `: ${error}` : ""}`;
+    return { status: "N", remarks: remarks.slice(0, 250) };
+  }
+
+  // Nothing accepted, nothing explicitly rejected either — every device
+  // outcome was inconclusive (offline, bad credentials, etc.).
+  return { status: "N", remarks: "Could not verify image — devices unreachable" };
+}
+
+async function importOne(client, formNo) {
   const detail = await client.getUserDetail(formNo);
   const student = mapUisStudent(detail);
-  const currentFingerprint = fingerprint(student);
-  const state = await UisImportState.findOne({ formNo }).lean();
 
-  if (state?.fingerprint === currentFingerprint) {
-    await markIfNeeded(client, state, formNo, isNewRecord);
-    return { formNo, action: "skipped_unchanged" };
+  if (student.status === "D") {
+    await deleteUser({ params: { employeeNo: student.employeeNo } });
+    await client.markRegisteredUser(formNo);
+    return { formNo, action: "deleted" };
   }
 
   const existing = await User.findOne({ employeeNo: student.employeeNo }, "status").lean();
@@ -137,10 +165,18 @@ async function importOne(client, { formNo, isNewRecord }) {
     throw new Error(`User ${student.employeeNo} is currently deleting`);
   }
 
-  const faceFile = await makeFaceUpload(student.faceImage, formNo);
+  // A brand-new record always needs its picture. For a record that's
+  // already on file, only touch the picture when UIS explicitly says it
+  // changed — everything else is a plain field update.
+  const isNewRecord = !existing;
+  const picChanged = isNewRecord || student.modifyRemarks === "Front Picture Changed";
+
+  const faceFile = picChanged ? await makeFaceUpload(student.faceImage, formNo) : null;
+
+  let syncOutcome;
   try {
     if (existing?.status === "active") {
-      await updateUser({
+      syncOutcome = await updateUser({
         params: { employeeNo: student.employeeNo },
         body: {
           name: student.name,
@@ -152,24 +188,20 @@ async function importOne(client, { formNo, isNewRecord }) {
       });
     } else {
       if (!faceFile) throw new Error(`UIS user ${student.employeeNo} has no FrontPic for registration`);
-      await registerUser({ body: student, file: faceFile });
+      syncOutcome = await registerUser({ body: student, file: faceFile });
     }
   } finally {
     await removeUpload(faceFile);
   }
 
-  await UisImportState.findOneAndUpdate(
-    { formNo },
-    {
-      $set: {
-        fingerprint: currentFingerprint,
-        lastImportedAt: new Date(),
-      },
-      $setOnInsert: { registeredMarkedAt: null },
-    },
-    { upsert: true, new: true },
-  );
-  await markIfNeeded(client, await UisImportState.findOne({ formNo }).lean(), formNo, isNewRecord);
+  // FRAI reflects whether the DEVICE actually accepted the picture, so
+  // it's only meaningful when a picture was actually pushed this round.
+  if (picChanged) {
+    const fraiOutcome = buildFraiOutcome(syncOutcome);
+    await client.markFraiVerification(formNo, fraiOutcome);
+  }
+
+  await client.markRegisteredUser(formNo);
   return { formNo, action: existing ? "updated" : "registered" };
 }
 
@@ -189,30 +221,32 @@ async function runUisImport() {
     if (newResult.status === "rejected") errors.push({ source: "new", error: newResult.reason.message });
     if (modifiedResult.status === "rejected") errors.push({ source: "modified", error: modifiedResult.reason.message });
 
-    const records = new Map();
+    // Status/ModifyRemarks from the detail call drive every downstream
+    // decision now, so all we need here is the set of formNos to process
+    // — no need to track which list each one came from.
+    const formNos = new Set();
     if (newResult.status === "fulfilled") {
       for (const record of newResult.value) {
         const formNo = String(record.FormNo || "").trim();
-        if (formNo) records.set(formNo, { formNo, isNewRecord: true });
+        if (formNo) formNos.add(formNo);
       }
     }
     if (modifiedResult.status === "fulfilled") {
       for (const record of modifiedResult.value) {
         const formNo = String(record.FormNo || "").trim();
-        if (!formNo) continue;
-        records.set(formNo, { formNo, isNewRecord: records.get(formNo)?.isNewRecord || false });
+        if (formNo) formNos.add(formNo);
       }
     }
 
     const results = [];
-    for (const record of records.values()) {
-      try { results.push(await importOne(client, record)); }
+    for (const formNo of formNos) {
+      try { results.push(await importOne(client, formNo)); }
       catch (err) {
-        console.error(`[uis-import] ${record.formNo} failed:`, err.message);
-        results.push({ formNo: record.formNo, action: "failed", error: err.message });
+        console.error(`[uis-import] ${formNo} failed:`, err.message);
+        results.push({ formNo, action: "failed", error: err.message });
       }
     }
-    console.log(`[uis-import] processed ${records.size} record(s) from ${dateFrom} to ${dateTo}`);
+    console.log(`[uis-import] processed ${formNos.size} record(s) from ${dateFrom} to ${dateTo}`);
     return { skipped: false, dateFrom, dateTo, results, errors };
   } finally {
     importInProgress = false;
